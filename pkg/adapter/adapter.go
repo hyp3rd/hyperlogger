@@ -1,0 +1,1027 @@
+// Package adapter provides concrete implementations of the logger interface.
+//
+// The adapter package bridges the abstract Logger interface with concrete implementations
+// that format and output log messages. It handles buffering, formatting, and writing
+// log entries to various output destinations.
+package adapter
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/hyp3rd/ewrap"
+
+	logger "github.com/hyp3rd/hyperlogger"
+	"github.com/hyp3rd/hyperlogger/internal/constants"
+	"github.com/hyp3rd/hyperlogger/internal/output"
+)
+
+// Buffer pool sizes for different message sizes.
+const (
+	smallBufferSize  = 1024
+	mediumBufferSize = 4096
+	largeBufferSize  = 16384
+	xlargeBufferSize = 32768
+
+	// Predicted sizes by message type to reduce reallocations.
+	jsonBaseSize     = 200 // Base size for JSON messages
+	consoleBaseSize  = 100 // Base size for console messages
+	fieldOverhead    = 40  // Estimated overhead per field in JSON
+	consoleFieldSize = 25  // Estimated size per field in console output
+
+	// Reuse threshold - only reuse buffers if they're within this ratio of the expected size.
+	bufferReuseRatio = 0.6
+
+	callerSkipLevel   = 5 // Skip level for caller info (increased to properly show external callers)
+	charactersPadding = 5
+
+	// Repeated values.
+	unknown = "unknown"
+)
+
+const (
+	// ASCII control characters and printable range.
+	asciiControlStart = 32  // Start of ASCII printable characters (space)
+	asciiControlEnd   = 126 // End of ASCII printable characters (~)
+)
+
+// bufferPoolBucket represents a size category for buffer pooling.
+type bufferPoolBucket struct {
+	size int
+	pool sync.Pool
+}
+
+// Adapter implements the logger.Logger interface.
+//
+//nolint:containedctx
+type Adapter struct {
+	config       *logger.Config
+	customHooks  map[logger.Level][]logger.LogHookFunc
+	hookRegistry *logger.HookRegistry
+	level        *atomic.Uint32
+	ctx          context.Context
+	fields       []logger.Field
+
+	// Unified buffer pool system
+	bufferPool []*bufferPoolBucket
+}
+
+// NewAdapter creates a new logger adapter with the given configuration.
+func NewAdapter(ctx context.Context, config logger.Config) (logger.Logger, error) {
+	err := validateConfig(&config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize adapter
+	adapter := &Adapter{
+		level:        new(atomic.Uint32),
+		customHooks:  make(map[logger.Level][]logger.LogHookFunc),
+		hookRegistry: logger.NewHookRegistry(),
+		fields:       cloneFields(config.AdditionalFields),
+		ctx:          ctx,
+	}
+
+	adapter.level.Store(uint32(config.Level))
+
+	// Set up unified buffer pool with multiple size buckets
+	adapter.bufferPool = []*bufferPoolBucket{
+		{
+			size: smallBufferSize,
+			pool: sync.Pool{
+				New: func() any {
+					return bytes.NewBuffer(make([]byte, 0, smallBufferSize))
+				},
+			},
+		},
+		{
+			size: mediumBufferSize,
+			pool: sync.Pool{
+				New: func() any {
+					return bytes.NewBuffer(make([]byte, 0, mediumBufferSize))
+				},
+			},
+		},
+		{
+			size: largeBufferSize,
+			pool: sync.Pool{
+				New: func() any {
+					return bytes.NewBuffer(make([]byte, 0, largeBufferSize))
+				},
+			},
+		},
+		{
+			size: xlargeBufferSize,
+			pool: sync.Pool{
+				New: func() any {
+					return bytes.NewBuffer(make([]byte, 0, xlargeBufferSize))
+				},
+			},
+		},
+	}
+
+	// Wrap output in AsyncWriter if async logging is enabled
+	if config.EnableAsync {
+		asyncConfig := output.AsyncConfig{
+			BufferSize:   config.AsyncBufferSize,
+			WaitTimeout:  constants.DefaultTimeout,
+			ErrorHandler: func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
+		}
+
+		adapter.config.Output = output.NewAsyncWriter(config.Output, asyncConfig)
+	}
+
+	// Register hooks from config
+	for _, hookConfig := range config.Hooks {
+		err := adapter.hookRegistry.AddHook(hookConfig.Name, hookConfig.Hook)
+		if err != nil {
+			return nil, ewrap.Wrapf(err, "failed to register hook '%s'", hookConfig.Name)
+		}
+	}
+
+	return adapter, nil
+}
+
+// Sync ensures that all logs have been written.
+// Flushes the AsyncWriter if one is being used.
+func (a *Adapter) Sync() error {
+	// If using AsyncWriter, we need to call its Sync method
+	if a.config.EnableAsync {
+		if asyncWriter, ok := a.config.Output.(*output.AsyncWriter); ok {
+			return asyncWriter.Sync()
+		}
+	}
+
+	// For synchronous writers or if type assertion failed.
+	if syncer, ok := a.config.Output.(interface{ Sync() error }); ok {
+		// Check if we're trying to sync stdout/stderr and skip it
+		if f, ok := a.config.Output.(*os.File); ok {
+			if f == os.Stdout || f == os.Stderr {
+				return nil // Skip syncing stdout/stderr
+			}
+		}
+
+		return syncer.Sync()
+	}
+
+	return nil
+}
+
+// Trace logs a message at trace level.
+func (a *Adapter) Trace(msg string) {
+	a.log(logger.TraceLevel, msg)
+}
+
+// Debug logs a message at debug level.
+func (a *Adapter) Debug(msg string) {
+	a.log(logger.DebugLevel, msg)
+}
+
+// Info logs a message at info level.
+func (a *Adapter) Info(msg string) {
+	a.log(logger.InfoLevel, msg)
+}
+
+// Warn logs a message at warn level.
+func (a *Adapter) Warn(msg string) {
+	a.log(logger.WarnLevel, msg)
+}
+
+// Error logs a message at error level.
+func (a *Adapter) Error(msg string) {
+	a.log(logger.ErrorLevel, msg)
+}
+
+// Fatal logs a message at fatal level then calls os.Exit(1).
+func (a *Adapter) Fatal(msg string) {
+	a.log(logger.FatalLevel, msg)
+}
+
+// Tracef logs a formatted message at trace level.
+func (a *Adapter) Tracef(format string, args ...any) {
+	a.Trace(fmt.Sprintf(format, args...))
+}
+
+// Debugf logs a formatted message at debug level.
+func (a *Adapter) Debugf(format string, args ...any) {
+	a.Debug(fmt.Sprintf(format, args...))
+}
+
+// Infof logs a formatted message at info level.
+func (a *Adapter) Infof(format string, args ...any) {
+	a.Info(fmt.Sprintf(format, args...))
+}
+
+// Warnf logs a formatted message at warn level.
+func (a *Adapter) Warnf(format string, args ...any) {
+	a.Warn(fmt.Sprintf(format, args...))
+}
+
+// Errorf logs a formatted message at error level.
+func (a *Adapter) Errorf(format string, args ...any) {
+	a.Error(fmt.Sprintf(format, args...))
+}
+
+// Fatalf logs a formatted message at fatal level.
+func (a *Adapter) Fatalf(format string, args ...any) {
+	a.Fatal(fmt.Sprintf(format, args...))
+}
+
+// WithContext returns a new logger with the given context.
+func (a *Adapter) WithContext(ctx context.Context) logger.Logger {
+	// Create a new adapter with the same config but with the given context
+	newAdapter := &Adapter{
+		config:       a.config,
+		level:        a.level,
+		fields:       a.fields,
+		customHooks:  a.customHooks,
+		hookRegistry: a.hookRegistry,
+		ctx:          ctx,
+		bufferPool:   a.bufferPool,
+	}
+
+	return newAdapter
+}
+
+// WithField adds a field to the logger.
+func (a *Adapter) WithField(key string, value any) logger.Logger {
+	return a.WithFields(logger.Field{Key: key, Value: value})
+}
+
+// WithFields adds fields to the logger.
+func (a *Adapter) WithFields(fields ...logger.Field) logger.Logger {
+	if len(fields) == 0 {
+		return a
+	}
+
+	// Create a new adapter with the same config but merged fields
+	newAdapter := &Adapter{
+		config:       a.config,
+		level:        a.level,
+		fields:       mergeFields(a.fields, fields),
+		customHooks:  a.customHooks,
+		hookRegistry: a.hookRegistry,
+		ctx:          a.ctx,
+		bufferPool:   a.bufferPool,
+	}
+
+	return newAdapter
+}
+
+// WithError adds an error field to the logger.
+func (a *Adapter) WithError(err error) logger.Logger {
+	if err == nil {
+		return a
+	}
+
+	return a.WithField("error", err.Error())
+}
+
+// GetLevel returns the current logging level.
+func (a *Adapter) GetLevel() logger.Level {
+	return logger.Level(a.level.Load())
+}
+
+// SetLevel sets the logging level.
+func (a *Adapter) SetLevel(level logger.Level) {
+	if level.IsValid() {
+		a.level.Store(uint32(level))
+	}
+}
+
+// GetConfig returns the current logger configuration.
+func (a *Adapter) GetConfig() *logger.Config {
+	return a.config
+}
+
+// validateConfig validates the logger configuration and sets defaults for missing values.
+func validateConfig(config *logger.Config) error {
+	if config == nil {
+		return ewrap.New("logger config cannot be nil")
+	}
+
+	// Check if the level is valid
+	if !config.Level.IsValid() {
+		return ewrap.New("invalid log level").WithMetadata("level", config.Level)
+	}
+
+	// Set default time format if not specified
+	if config.TimeFormat == "" {
+		config.TimeFormat = time.RFC3339
+	}
+
+	// Check if output is specified
+	if config.Output == nil {
+		return ewrap.New("output writer is required")
+	}
+
+	return nil
+}
+
+// cloneFields creates a shallow copy of a slice of fields to prevent shared state mutation.
+func cloneFields(fields []logger.Field) []logger.Field {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	cloned := make([]logger.Field, len(fields))
+	copy(cloned, fields)
+
+	return cloned
+}
+
+// mergeFields combines multiple field slices into a single slice, avoiding duplicates.
+// Fields from later slices override those from earlier ones if they have the same key.
+func mergeFields(fields ...[]logger.Field) []logger.Field {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	// Count total capacity needed
+	totalCap := 0
+	for _, fs := range fields {
+		totalCap += len(fs)
+	}
+
+	// Create map to track field keys for de-duplication
+	seen := make(map[string]int, totalCap)
+	result := make([]logger.Field, 0, totalCap)
+
+	// Merge all field slices
+	for _, fs := range fields {
+		for _, field := range fs {
+			if idx, exists := seen[field.Key]; exists {
+				// Update existing field
+				result[idx].Value = field.Value
+			} else {
+				// Add new field
+				seen[field.Key] = len(result)
+				result = append(result, field)
+			}
+		}
+	}
+
+	return result
+}
+
+// getLevelColor returns the color code for a log level and a boolean
+// indicating whether color should be applied.
+func getLevelColor(level logger.Level) (output.ColorCode, bool) {
+	switch level {
+	case logger.TraceLevel:
+		return output.ColorCodeMagenta, true
+	case logger.DebugLevel:
+		return output.ColorCodeBlue, true
+	case logger.InfoLevel:
+		return output.ColorCodeGreen, true
+	case logger.WarnLevel:
+		return output.ColorCodeYellow, true
+	case logger.ErrorLevel:
+		return output.ColorCodeRed, true
+	case logger.FatalLevel:
+		return output.ColorCodeRedBold, true
+	default:
+		return output.ColorCodeReset, false
+	}
+}
+
+// getBuffer retrieves an appropriately-sized buffer from the pool.
+// Uses predictBufferSize to get an optimal buffer for the content.
+func (a *Adapter) getBuffer(size int) *bytes.Buffer {
+	// Find the smallest bucket that can accommodate the requested size
+	for _, bucket := range a.bufferPool {
+		if size <= bucket.size {
+			if buf, ok := bucket.pool.Get().(*bytes.Buffer); ok {
+				buf.Reset()
+
+				return buf
+			}
+			// If type assertion fails, create a new buffer of this size
+			return bytes.NewBuffer(make([]byte, 0, bucket.size))
+		}
+	}
+
+	// If size exceeds all buckets, create a new buffer with exact capacity
+	return bytes.NewBuffer(make([]byte, 0, size))
+}
+
+// returnBuffer returns a buffer to the appropriate pool.
+func (a *Adapter) returnBuffer(buf *bytes.Buffer) {
+	if buf == nil {
+		return
+	}
+
+	bufCap := buf.Cap()
+
+	// Find the appropriate bucket for this buffer size
+	// If buffer is larger than any bucket, don't return it to the pool
+	// Let it be garbage collected
+	for _, bucket := range a.bufferPool {
+		if bufCap <= bucket.size {
+			// Only return the buffer if it's not too small for the bucket
+			// This prevents excessive buffer growth
+			if float64(bufCap) >= float64(bucket.size)*bufferReuseRatio {
+				bucket.pool.Put(buf)
+			}
+
+			return
+		}
+	}
+}
+
+// getCaller returns the caller information at the specified skip level.
+func getCaller(skip int) (string, int, string) {
+	// Get caller information
+	pc, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return unknown, 0, unknown
+	}
+
+	// Get function name
+	fn := runtime.FuncForPC(pc)
+
+	var funcName string
+
+	if fn == nil {
+		funcName = unknown
+	} else {
+		funcName = filepath.Base(fn.Name())
+	}
+
+	return file, line, funcName
+}
+
+// formatCallerInfo formats the caller information based on configuration.
+func formatCallerInfo(file string, line int, funcName string, shortPath bool) string {
+	if shortPath {
+		file = filepath.Base(file)
+	}
+
+	return fmt.Sprintf("%s:%d %s", file, line, funcName)
+}
+
+// withContext adds context values to the fields.
+func withContext(ctx context.Context, fields []logger.Field) []logger.Field {
+	if ctx == nil {
+		return fields
+	}
+
+	// Add trace ID if present
+	if traceID, ok := ctx.Value(constants.TraceIDKey).(string); ok && traceID != "" {
+		fields = append(fields, logger.Field{Key: "trace_id", Value: traceID})
+	}
+
+	// Add request ID if present
+	if requestID, ok := ctx.Value(constants.RequestIDKey).(string); ok && requestID != "" {
+		fields = append(fields, logger.Field{Key: "request_id", Value: requestID})
+	}
+
+	// Add namespace if present
+	if ns, ok := ctx.Value(constants.NamespaceKey{}).(string); ok && ns != "" {
+		fields = append(fields, logger.Field{Key: "namespace", Value: ns})
+	}
+
+	return fields
+}
+
+// attachStackTrace appends a stack trace to the entry when enabled for high-severity logs.
+func (a *Adapter) attachStackTrace(entry *logger.Entry) {
+	if entry == nil {
+		return
+	}
+
+	if !a.config.EnableStackTrace {
+		return
+	}
+
+	if entry.Level < logger.ErrorLevel {
+		return
+	}
+
+	stack := debug.Stack()
+	if len(stack) == 0 {
+		return
+	}
+
+	entry.Fields = append(entry.Fields, logger.Field{
+		Key:   "stack",
+		Value: string(stack),
+	})
+}
+
+// formatValue formats a value for logging.
+func formatValue(v any) string {
+	if v == nil {
+		return "null"
+	}
+
+	switch val := v.(type) {
+	case string:
+		return val
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, complex64, complex128:
+		return fmt.Sprintf("%v", val)
+	case bool:
+		return strconv.FormatBool(val)
+	case time.Time:
+		return val.Format(time.RFC3339)
+	case fmt.Stringer:
+		return val.String()
+	case error:
+		return val.Error()
+	default:
+		// For more complex types, use %+v
+		return fmt.Sprintf("%+v", val)
+	}
+}
+
+// formatConsoleOutput formats log entry for console output.
+// Optimized to minimize allocations and string operations.
+func formatConsoleOutput(
+	builder *bytes.Buffer,
+	entry *logger.Entry,
+	config *logger.Config,
+) {
+	cfg := config
+	if cfg == nil {
+		cfg = &logger.Config{}
+	}
+
+	// Format timestamp when enabled
+	appendTimestamp(builder, cfg.TimeFormat, cfg.DisableTimestamp)
+
+	// Format log level with configured colors
+	appendLogLevel(builder, entry.Level, cfg.Color)
+
+	// Add caller information if enabled
+	if cfg.EnableCaller {
+		file, line, funcName := getCaller(callerSkipLevel)
+		appendCallerInfo(builder, file, line, funcName)
+	}
+
+	// Add message
+	builder.WriteString(entry.Message)
+
+	// Add fields if present
+	if len(entry.Fields) > 0 {
+		appendFields(builder, entry.Fields)
+	}
+
+	builder.WriteByte('\n')
+}
+
+// appendTimestamp writes the formatted timestamp to the buffer.
+func appendTimestamp(builder *bytes.Buffer, timeFormat string, disable bool) {
+	if builder == nil || disable {
+		return
+	}
+
+	if timeFormat == "" {
+		timeFormat = time.RFC3339
+	}
+
+	builder.WriteString(time.Now().Format(timeFormat))
+	builder.WriteByte(' ')
+}
+
+// appendLogLevel formats and writes the log level to the buffer.
+func appendLogLevel(builder *bytes.Buffer, level logger.Level, colorCfg logger.ColorConfig) {
+	levelStr := level.String()
+
+	if colorCfg.Enable {
+		if seq, ok := colorCfg.LevelColors[level]; ok && seq != "" {
+			builder.WriteString(seq)
+			appendPaddedLevel(builder, levelStr)
+			builder.WriteString(logger.Reset)
+
+			return
+		}
+
+		if color, ok := getLevelColor(level); ok {
+			builder.WriteString(color.Start())
+			appendPaddedLevel(builder, levelStr)
+			builder.WriteString(color.End())
+
+			return
+		}
+	}
+
+	appendPaddedLevel(builder, levelStr)
+}
+
+// appendPaddedLevel writes the level string padded to 5 characters.
+func appendPaddedLevel(builder *bytes.Buffer, levelStr string) {
+	builder.WriteByte('[')
+
+	// Pad level string to 5 characters for alignment
+	padLen := charactersPadding - len(levelStr)
+
+	for range padLen {
+		builder.WriteByte(' ')
+	}
+
+	builder.WriteString(levelStr)
+	builder.WriteString("] ")
+}
+
+// appendCallerInfo formats and writes the caller information to the buffer.
+func appendCallerInfo(builder *bytes.Buffer, file string, line int, funcName string) {
+	if shortPath := filepath.Base(file); shortPath != "." {
+		builder.WriteString(shortPath)
+	} else {
+		builder.WriteString(file)
+	}
+
+	builder.WriteByte(':')
+	builder.WriteString(strconv.Itoa(line))
+	builder.WriteByte(' ')
+	builder.WriteString(funcName)
+	builder.WriteByte(' ')
+}
+
+// appendFields formats and writes the fields to the buffer.
+func appendFields(builder *bytes.Buffer, fields []logger.Field) {
+	builder.WriteString(" {")
+
+	for i, field := range fields {
+		if i > 0 {
+			builder.WriteString(", ")
+		}
+
+		builder.WriteString(field.Key)
+		builder.WriteByte('=')
+		appendFieldValue(builder, field.Value)
+	}
+
+	builder.WriteByte('}')
+}
+
+// appendFieldValue writes a field value to the buffer.
+func appendFieldValue(builder *bytes.Buffer, value any) {
+	// Optimize common field value types
+	switch val := value.(type) {
+	case string:
+		builder.WriteString(val)
+	case int:
+		builder.WriteString(strconv.Itoa(val))
+	case bool:
+		if val {
+			builder.WriteString("true")
+		} else {
+			builder.WriteString("false")
+		}
+	default:
+		builder.WriteString(formatValue(val))
+	}
+}
+
+// jsonEscapeString writes a properly escaped JSON string to the buffer.
+// Uses direct byte operations instead of string concatenation for better performance.
+func jsonEscapeString(buf *bytes.Buffer, target string) {
+	buf.WriteByte('"')
+
+	start := 0
+
+	for i := range target {
+		character := target[i]
+		if needsEscaping(character) {
+			// Write any pending bytes before this character
+			if start < i {
+				buf.WriteString(target[start:i])
+			}
+
+			writeEscapedChar(buf, character)
+
+			start = i + 1
+		}
+	}
+
+	// Write any remaining bytes
+	if start < len(target) {
+		buf.WriteString(target[start:])
+	}
+
+	buf.WriteByte('"')
+}
+
+// needsEscaping determines if a character needs special JSON escaping.
+func needsEscaping(c byte) bool {
+	switch c {
+	case '"', '\\', '\b', '\f', '\n', '\r', '\t':
+		return true
+	default:
+		return c < asciiControlStart || c > asciiControlEnd
+	}
+}
+
+// writeEscapedChar writes the escaped version of a character to the buffer.
+func writeEscapedChar(buf *bytes.Buffer, character byte) {
+	switch character {
+	case '"':
+		buf.WriteString("\\\"")
+	case '\\':
+		buf.WriteString("\\\\")
+	case '\b':
+		buf.WriteString("\\b")
+	case '\f':
+		buf.WriteString("\\f")
+	case '\n':
+		buf.WriteString("\\n")
+	case '\r':
+		buf.WriteString("\\r")
+	case '\t':
+		buf.WriteString("\\t")
+	default:
+		// Control characters and others outside ASCII printable range
+		fmt.Fprintf(buf, "\\u%04x", character)
+	}
+}
+
+// formatJSONValue formats a value for JSON output.
+// Specialized handling for common types to avoid any overhead.
+//
+//nolint:cyclop,funlen,revive // It's a long switch still readable.
+func formatJSONValue(buf *bytes.Buffer, data any) {
+	if data == nil {
+		buf.WriteString("null")
+
+		return
+	}
+
+	switch val := data.(type) {
+	case string:
+		jsonEscapeString(buf, val)
+	case int:
+		buf.WriteString(strconv.FormatInt(int64(val), 10))
+	case int8:
+		buf.WriteString(strconv.FormatInt(int64(val), 10))
+	case int16:
+		buf.WriteString(strconv.FormatInt(int64(val), 10))
+	case int32:
+		buf.WriteString(strconv.FormatInt(int64(val), 10))
+	case int64:
+		buf.WriteString(strconv.FormatInt(val, 10))
+	case uint:
+		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+	case uint8:
+		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+	case uint16:
+		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+	case uint32:
+		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+	case uint64:
+		buf.WriteString(strconv.FormatUint(val, 10))
+	case float32:
+		buf.WriteString(strconv.FormatFloat(float64(val), 'f', -1, 32))
+	case float64:
+		buf.WriteString(strconv.FormatFloat(val, 'f', -1, 64))
+	case bool:
+		if val {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+	case error:
+		jsonEscapeString(buf, val.Error())
+	case time.Time:
+		jsonEscapeString(buf, val.Format(time.RFC3339))
+	case []byte:
+		jsonEscapeString(buf, string(val))
+	default: // Use fmt.Sprintf for other types
+		jsonEscapeString(buf, fmt.Sprintf("%+v", val))
+	}
+}
+
+// formatJSONOutput formats log entry as JSON.
+// Optimized to minimize allocations and string operations.
+func formatJSONOutput(builder *bytes.Buffer, entry *logger.Entry, config *logger.Config) {
+	cfg := config
+	if cfg == nil {
+		cfg = &logger.Config{}
+	}
+
+	// Start JSON object
+	builder.WriteString("{")
+
+	// Add timestamp - use a single write operation with a precomputed string
+	if !cfg.DisableTimestamp {
+		timeFormat := cfg.TimeFormat
+		if timeFormat == "" {
+			timeFormat = time.RFC3339
+		}
+
+		timestamp := time.Now().Format(timeFormat)
+
+		builder.WriteString(`"time":"`)
+		builder.WriteString(timestamp)
+		builder.WriteString(`",`)
+	}
+
+	// Add level - avoid string concatenation
+	builder.WriteString(`"severity":"`)
+	builder.WriteString(entry.Level.String())
+	builder.WriteString(`",`)
+
+	// Add caller if enabled
+	if cfg.EnableCaller {
+		file, line, funcName := getCaller(callerSkipLevel) // Adjust skip level as needed
+
+		builder.WriteString(`"caller":"`)
+		builder.WriteString(formatCallerInfo(file, line, funcName, true))
+		builder.WriteString(`",`)
+	}
+
+	// Add message
+	builder.WriteString(`"message":`)
+	jsonEscapeString(builder, entry.Message)
+
+	// Add fields more efficiently
+	if len(entry.Fields) > 0 {
+		builder.WriteByte(',')
+
+		for i, field := range entry.Fields {
+			if i > 0 {
+				builder.WriteByte(',')
+			}
+
+			// Write field key as a JSON string
+			builder.WriteByte('"')
+			builder.WriteString(field.Key)
+			builder.WriteString(`":`)
+
+			// Format the value based on type
+			formatJSONValue(builder, field.Value)
+		}
+	}
+
+	// Close JSON object
+	builder.WriteString("}\n")
+}
+
+// log handles the common logging logic for all log levels.
+func (a *Adapter) log(level logger.Level, msg string) {
+	if level < logger.Level(a.level.Load()) {
+		return // Skip logging if the level is below our configured level
+	}
+
+	// Create log entry with cloned base fields to avoid cross-request mutation.
+	entry := &logger.Entry{
+		Level:   level,
+		Message: msg,
+		Fields:  cloneFields(a.fields),
+	}
+
+	// Add context values to fields
+	entry.Fields = withContext(a.ctx, entry.Fields)
+
+	// Attach stack trace for error-level logs when configured
+	a.attachStackTrace(entry)
+
+	// Execute hooks for this entry
+	if a.hookRegistry != nil {
+		a.processHooks(entry)
+	}
+
+	// Format and write the log entry
+	var buf *bytes.Buffer
+
+	if a.config.EnableJSON {
+		buf = a.formatJSON(entry)
+	} else {
+		buf = a.formatConsole(entry)
+	}
+
+	// Write to output
+	_, err := a.config.Output.Write(buf.Bytes())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to write log: %v\n", err)
+	}
+
+	a.returnBuffer(buf)
+
+	// If this is a fatal log, exit the program
+	if level == logger.FatalLevel {
+		a.exit(entry, 1)
+	}
+}
+
+// exit handles cleanup and exits the program with the given code.
+//
+//nolint:revive
+func (a *Adapter) exit(entry *logger.Entry, code int) {
+	err := a.Sync()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to sync logs before exit: %v\n", err)
+	}
+
+	os.Exit(code)
+}
+
+// processHooks executes registered hooks and handles any errors they produce.
+func (a *Adapter) processHooks(entry *logger.Entry) {
+	// Fire hooks and collect any errors
+	hookErrs := a.hookRegistry.FireHooks(entry)
+
+	// Log hook errors if any occurred
+	for _, err := range hookErrs {
+		if err != nil {
+			a.logHookError(err)
+		}
+	}
+}
+
+// logHookError formats and logs an error that occurred during hook execution.
+func (a *Adapter) logHookError(err error) {
+	errMsg := fmt.Sprintf("Hook execution error: %v", err)
+
+	// Create error entry
+	errEntry := &logger.Entry{
+		Level:   logger.ErrorLevel,
+		Message: errMsg,
+		Fields:  nil,
+	}
+
+	// Format error entry based on configuration
+	var errBuf *bytes.Buffer
+
+	if a.config.EnableJSON {
+		errBuf = a.formatJSON(errEntry)
+	} else {
+		errBuf = a.formatConsole(errEntry)
+	}
+
+	// Write error log
+	_, writeErr := a.config.Output.Write(errBuf.Bytes())
+	if writeErr != nil {
+		fmt.Fprintf(os.Stderr, "Failed to write error log: %v\n", writeErr)
+	}
+
+	a.returnBuffer(errBuf)
+}
+
+// formatConsole formats a log entry for console output.
+func (a *Adapter) formatConsole(entry *logger.Entry) *bytes.Buffer {
+	// More accurate size prediction based on message content and fields
+	size := predictBufferSize("console", len(entry.Message), len(entry.Fields))
+	buf := a.getBuffer(size)
+
+	formatConsoleOutput(buf, entry, a.config)
+
+	return buf
+}
+
+// formatJSON formats a log entry as JSON.
+func (a *Adapter) formatJSON(entry *logger.Entry) *bytes.Buffer {
+	// More accurate size prediction based on message content and fields
+	size := predictBufferSize("json", len(entry.Message), len(entry.Fields))
+	buf := a.getBuffer(size)
+
+	formatJSONOutput(buf, entry, a.config)
+
+	return buf
+}
+
+// predictBufferSize calculates a more accurate buffer size based on content.
+func predictBufferSize(format string, msgLen int, fieldsLen int) int {
+	var baseSize, fieldMultiplier int
+
+	if format == "json" {
+		baseSize = jsonBaseSize
+		fieldMultiplier = fieldOverhead
+	} else {
+		baseSize = consoleBaseSize
+		fieldMultiplier = consoleFieldSize
+	}
+
+	// Calculate size based on message length and number of fields
+	// Add extra capacity to avoid reallocations in most cases
+	predictedSize := baseSize + msgLen + (fieldsLen * fieldMultiplier)
+
+	// Round up to nearest power of 2 for optimal memory usage
+	return nextPowerOfTwo(predictedSize)
+}
+
+// nextPowerOfTwo rounds up to the next power of 2.
+//
+//nolint:mnd,revive
+func nextPowerOfTwo(val int) int {
+	val--
+	val |= val >> 1
+	val |= val >> 2
+	val |= val >> 4
+	val |= val >> 8
+	val |= val >> 16
+	val++
+
+	return val
+}
