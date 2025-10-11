@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewConfigBuilder(t *testing.T) {
@@ -193,9 +195,15 @@ func TestWithAsyncDropHandler(t *testing.T) {
 
 func TestWithContextExtractor(t *testing.T) {
 	var saw bool
+	type ctxKey struct{}
+
 	extractor := func(ctx context.Context) []Field {
 		saw = true
-		return []Field{{Key: "example", Value: "value"}}
+		if val, ok := ctx.Value(ctxKey{}).(string); ok && val != "" {
+			return []Field{{Key: "example", Value: val}}
+		}
+
+		return nil
 	}
 
 	config := NewConfigBuilder().WithContextExtractor(extractor).Build()
@@ -204,9 +212,30 @@ func TestWithContextExtractor(t *testing.T) {
 		t.Fatalf("expected 1 extractor, got %d", len(config.ContextExtractors))
 	}
 
-	fields := config.ContextExtractors[0](context.Background())
-	if !saw || len(fields) != 1 {
-		t.Fatalf("context extractor not invoked correctly")
+	ctx := context.WithValue(context.Background(), ctxKey{}, "value")
+	fields := config.ContextExtractors[0](ctx)
+	if !saw || len(fields) != 1 || fields[0].Value != "value" {
+		t.Fatalf("context extractor not invoked correctly: %+v", fields)
+	}
+}
+
+func TestWithEncoderAndEncoderName(t *testing.T) {
+	encoder := &mockEncoder{}
+	registry := NewEncoderRegistry()
+	require.NoError(t, registry.Register("custom", encoder))
+
+	cfg := NewConfigBuilder().
+		WithEncoderName("custom").
+		WithEncoderRegistry(registry).
+		WithEncoder(encoder).
+		Build()
+
+	if cfg.Encoder != encoder {
+		t.Fatalf("expected encoder to be set")
+	}
+
+	if cfg.EncoderName != "custom" {
+		t.Fatalf("expected encoder name to be set")
 	}
 }
 
@@ -236,6 +265,16 @@ func TestWithFields(t *testing.T) {
 	if len(config.AdditionalFields) != 2 {
 		t.Error("WithFields did not add all fields")
 	}
+}
+
+type mockEncoder struct{}
+
+func (m *mockEncoder) Encode(*Entry, *Config, *bytes.Buffer) ([]byte, error) {
+	return []byte("encoded"), nil
+}
+
+func (m *mockEncoder) EstimateSize(*Entry) int {
+	return 0
 }
 
 func TestWithFileRotation(t *testing.T) {

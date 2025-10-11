@@ -14,10 +14,12 @@ import (
 
 // mockWriter implements io.Writer with controllable behavior for testing.
 type mockWriter struct {
-	mu          sync.Mutex
-	writtenData [][]byte
-	writeError  error
-	writeDelay  time.Duration
+	mu                    sync.Mutex
+	writtenData           [][]byte
+	writeError            error
+	transientError        error
+	failuresBeforeSuccess int
+	writeDelay            time.Duration
 }
 
 func newMockWriter() *mockWriter {
@@ -29,15 +31,29 @@ func newMockWriter() *mockWriter {
 func (m *mockWriter) Write(p []byte) (int, error) {
 	m.mu.Lock()
 	delay := m.writeDelay
-	writeError := m.writeError
+	persistentErr := m.writeError
+	transientErr := m.transientError
+	failures := m.failuresBeforeSuccess
+	if failures > 0 {
+		m.failuresBeforeSuccess--
+	}
 	m.mu.Unlock()
 
 	if delay > 0 {
 		time.Sleep(delay)
 	}
 
-	if writeError != nil {
-		return 0, writeError
+	if failures > 0 {
+		err := transientErr
+		if err == nil {
+			err = errors.New("transient error")
+		}
+
+		return 0, err
+	}
+
+	if persistentErr != nil {
+		return 0, persistentErr
 	}
 
 	m.mu.Lock()
@@ -269,6 +285,78 @@ func TestAsyncWriter_Write(t *testing.T) {
 			t.Fatalf("expected both messages to be written, got %v", written)
 		}
 	})
+}
+
+func TestAsyncWriter_Metrics(t *testing.T) {
+	writer := newMockWriter()
+	writer.writeDelay = 100 * time.Millisecond
+
+	var reported AsyncMetrics
+	async := NewAsyncWriter(writer, AsyncConfig{
+		BufferSize:       1,
+		OverflowStrategy: AsyncOverflowDropNewest,
+		MetricsReporter:  func(m AsyncMetrics) { reported = m },
+	})
+	defer async.Close()
+
+	_, err := async.Write([]byte("first"))
+	require.NoError(t, err)
+
+	_, err = async.Write([]byte("second"))
+	require.ErrorIs(t, err, ErrBufferFull)
+
+	time.Sleep(150 * time.Millisecond)
+
+	snapshot := async.Metrics()
+	if snapshot.Enqueued == 0 {
+		t.Fatalf("expected enqueued entries to be tracked")
+	}
+
+	if snapshot.Dropped == 0 {
+		t.Fatalf("expected dropped entries to be tracked")
+	}
+
+	if reported.Dropped == 0 {
+		t.Fatalf("expected metrics reporter to receive updates")
+	}
+}
+
+func TestAsyncWriter_Retry(t *testing.T) {
+	writer := newMockWriter()
+	writer.transientError = errors.New("temporary")
+	writer.failuresBeforeSuccess = 2
+
+	async := NewAsyncWriter(writer, AsyncConfig{
+		RetryEnabled:           true,
+		MaxRetries:             3,
+		RetryBackoff:           5 * time.Millisecond,
+		RetryBackoffMultiplier: 1.0,
+		RetryMaxBackoff:        5 * time.Millisecond,
+	})
+	defer async.Close()
+
+	_, err := async.Write([]byte("retry message"))
+	require.NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+
+	metrics := async.Metrics()
+	if metrics.Processed == 0 {
+		t.Fatalf("expected message to eventually process")
+	}
+
+	if metrics.Retried != 2 {
+		t.Fatalf("expected 2 retries, got %d", metrics.Retried)
+	}
+
+	if metrics.WriteError != 2 {
+		t.Fatalf("expected 2 write errors, got %d", metrics.WriteError)
+	}
+
+	data := writer.getWrittenData()
+	if len(data) != 1 {
+		t.Fatalf("expected one successful write, got %d", len(data))
+	}
 }
 
 func TestAsyncWriter_Flush(t *testing.T) {

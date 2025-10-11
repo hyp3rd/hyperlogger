@@ -7,16 +7,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	logger "github.com/hyp3rd/hyperlogger"
+	"github.com/hyp3rd/hyperlogger"
 	"github.com/hyp3rd/hyperlogger/internal/constants"
 )
 
-func TestNew(t *testing.T) {
+func TestNewWithDefaults(t *testing.T) {
 	tests := []struct {
 		name        string
 		environment string
 		service     string
-		wantLevel   logger.Level
+		wantLevel   hyperlogger.Level
 		wantJSON    bool
 		wantErr     bool
 	}{
@@ -24,7 +24,7 @@ func TestNew(t *testing.T) {
 			name:        "non-production environment",
 			environment: constants.NonProductionEnvironment,
 			service:     "test-service",
-			wantLevel:   logger.DebugLevel,
+			wantLevel:   hyperlogger.DebugLevel,
 			wantJSON:    false,
 			wantErr:     false,
 		},
@@ -32,7 +32,7 @@ func TestNew(t *testing.T) {
 			name:        "production environment",
 			environment: "production",
 			service:     "test-service",
-			wantLevel:   logger.InfoLevel,
+			wantLevel:   hyperlogger.InfoLevel,
 			wantJSON:    true,
 			wantErr:     false,
 		},
@@ -40,7 +40,7 @@ func TestNew(t *testing.T) {
 			name:        "empty environment",
 			environment: "",
 			service:     "test-service",
-			wantLevel:   logger.InfoLevel,
+			wantLevel:   hyperlogger.InfoLevel,
 			wantJSON:    true,
 			wantErr:     false,
 		},
@@ -48,7 +48,7 @@ func TestNew(t *testing.T) {
 			name:        "empty service name",
 			environment: constants.NonProductionEnvironment,
 			service:     "",
-			wantLevel:   logger.DebugLevel,
+			wantLevel:   hyperlogger.DebugLevel,
 			wantJSON:    false,
 			wantErr:     false,
 		},
@@ -56,7 +56,7 @@ func TestNew(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log, err := New(context.Background(), tt.environment, tt.service)
+			log, err := NewWithDefaults(context.Background(), tt.environment, tt.service)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Nil(t, log)

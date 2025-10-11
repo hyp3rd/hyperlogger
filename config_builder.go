@@ -174,6 +174,27 @@ func (b *ConfigBuilder) WithAsyncDropHandler(handler func([]byte)) *ConfigBuilde
 	return b
 }
 
+// WithEncoder assigns a custom encoder to the configuration.
+func (b *ConfigBuilder) WithEncoder(encoder Encoder) *ConfigBuilder {
+	b.config.Encoder = encoder
+
+	return b
+}
+
+// WithEncoderName selects an encoder by name from the global registry.
+func (b *ConfigBuilder) WithEncoderName(name string) *ConfigBuilder {
+	b.config.EncoderName = name
+
+	return b
+}
+
+// WithEncoderRegistry sets the encoder registry used when resolving named encoders.
+func (b *ConfigBuilder) WithEncoderRegistry(registry *EncoderRegistry) *ConfigBuilder {
+	b.config.EncoderRegistry = registry
+
+	return b
+}
+
 // WithContextExtractor appends a context extractor used to enrich log fields.
 func (b *ConfigBuilder) WithContextExtractor(extractor ContextExtractor) *ConfigBuilder {
 	if extractor != nil {

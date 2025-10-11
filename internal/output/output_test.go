@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	logger "github.com/hyp3rd/hyperlogger"
+	"github.com/hyp3rd/hyperlogger"
 )
 
 type closableBuffer struct {
@@ -117,25 +117,25 @@ func TestConsoleWriter_Write(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   []byte
-		level   logger.Level
+		level   hyperlogger.Level
 		wantErr bool
 	}{
 		{
 			name:    "info level",
 			input:   []byte("INFO test message"),
-			level:   logger.InfoLevel,
+			level:   hyperlogger.InfoLevel,
 			wantErr: false,
 		},
 		{
 			name:    "error level",
 			input:   []byte("ERROR test message"),
-			level:   logger.ErrorLevel,
+			level:   hyperlogger.ErrorLevel,
 			wantErr: false,
 		},
 		{
 			name:    "debug level",
 			input:   []byte("DEBUG test message"),
-			level:   logger.DebugLevel,
+			level:   hyperlogger.DebugLevel,
 			wantErr: false,
 		},
 	}

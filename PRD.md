@@ -80,9 +80,15 @@ Hyperlogger targets high-throughput Go services but the current implementation l
 ## Milestones
 
 1. **Core Safety & Parity**: Fix field mutation, honor config flags, implement stack traces, make level operations atomic, and add tests/benchmarks.
-2. **Async & Output Reliability**: Redesign async buffering, integrate file/multi-writer outputs, add failure metrics and hooks.
-3. **Ergonomic Enhancements**: Introduce typed fields, sampling, context extractors, and update the builder/API docs.
-4. **Stabilization**: Performance tuning, docs polish, compatibility review, and release packaging.
+1. **Async & Output Reliability**: Redesign async buffering, integrate file/multi-writer outputs, add failure metrics and hooks.
+1. **Ergonomic Enhancements**: Introduce typed fields, sampling, context extractors, and update the builder/API docs.
+1. **Stabilization**: Performance tuning, docs polish, compatibility review, and release packaging.
+
+### Benchmark & Documentation Plan
+
+- Produce reproducible benchmarks covering console/JSON/custom encoders, async strategies, and file outputs using Go's benchmarking harness.
+- Document async health metrics and retry semantics, including integration examples for HTTP and optional gRPC middleware.
+- Publish configuration loader usage (env/file) with sample manifests and migration guidance.
 
 ## Open Questions
 

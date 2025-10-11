@@ -3,7 +3,7 @@
 // counts and an AlertHook that simulates sending alerts for critical errors.
 //
 // This example illustrates:
-//   - How to implement the logger.Hook interface
+//   - How to implement the hyperlogger.Hook interface
 //   - How to create stateful hooks that track metrics
 //   - How to register multiple hooks with a logger
 //   - How hooks can filter which log levels they respond to
@@ -15,19 +15,19 @@
 // It illustrates how to implement a stateful logger hook that can
 // maintain metrics about log events.
 
-// OnLog implements logger.Hook interface. It increments internal counters
+// OnLog implements hyperlogger.Hook interface. It increments internal counters
 // when errors or warnings are logged, printing the updated counts to stdout.
 
-// Levels implements logger.Hook interface. It returns the log levels
+// Levels implements hyperlogger.Hook interface. It returns the log levels
 // this hook should be triggered for (WarnLevel, ErrorLevel, FatalLevel).
 
 // AlertHook demonstrates a hook that could be used to send external alerts
 // for critical errors. In a real system, this would integrate with an alerting service.
 
-// OnLog implements logger.Hook interface. It formats and outputs an alert
+// OnLog implements hyperlogger.Hook interface. It formats and outputs an alert
 // message with the log level, message, and any additional fields.
 
-// Levels implements logger.Hook interface. It returns the log levels
+// Levels implements hyperlogger.Hook interface. It returns the log levels
 // this hook should be triggered for (ErrorLevel, FatalLevel).
 
 // hooks/main demonstrates the creation and use of logger hooks. It:
@@ -43,7 +43,7 @@ import (
 	"os"
 	"time"
 
-	logger "github.com/hyp3rd/hyperlogger"
+	"github.com/hyp3rd/hyperlogger"
 	"github.com/hyp3rd/hyperlogger/pkg/adapter"
 )
 
@@ -55,14 +55,14 @@ type MetricsHook struct {
 	warningCount int
 }
 
-// OnLog implements logger.Hook.
-func (m *MetricsHook) OnLog(entry *logger.Entry) error {
+// OnLog implements hyperlogger.Hook.
+func (m *MetricsHook) OnLog(entry *hyperlogger.Entry) error {
 	//nolint:exhaustive
 	switch entry.Level {
-	case logger.ErrorLevel, logger.FatalLevel:
+	case hyperlogger.ErrorLevel, hyperlogger.FatalLevel:
 		m.errorCount++
 		fmt.Fprintf(os.Stdout, "Metrics: Error count increased to %d\n", m.errorCount)
-	case logger.WarnLevel:
+	case hyperlogger.WarnLevel:
 		m.warningCount++
 		fmt.Fprintf(os.Stdout, "Metrics: Warning count increased to %d\n", m.warningCount)
 	default:
@@ -72,20 +72,20 @@ func (m *MetricsHook) OnLog(entry *logger.Entry) error {
 	return nil
 }
 
-// Levels implements logger.Hook.
-func (*MetricsHook) Levels() []logger.Level {
-	return []logger.Level{
-		logger.WarnLevel,
-		logger.ErrorLevel,
-		logger.FatalLevel,
+// Levels implements hyperlogger.Hook.
+func (*MetricsHook) Levels() []hyperlogger.Level {
+	return []hyperlogger.Level{
+		hyperlogger.WarnLevel,
+		hyperlogger.ErrorLevel,
+		hyperlogger.FatalLevel,
 	}
 }
 
 // AlertHook sends alerts for critical errors.
 type AlertHook struct{}
 
-// OnLog implements logger.Hook.
-func (*AlertHook) OnLog(entry *logger.Entry) error {
+// OnLog implements hyperlogger.Hook.
+func (*AlertHook) OnLog(entry *hyperlogger.Entry) error {
 	// In a real system, this would send to an alerting service
 	fmt.Fprintf(os.Stdout, "🚨 ALERT: %s - %s\n", entry.Level, entry.Message)
 
@@ -97,11 +97,11 @@ func (*AlertHook) OnLog(entry *logger.Entry) error {
 	return nil
 }
 
-// Levels implements logger.Hook.
-func (*AlertHook) Levels() []logger.Level {
-	return []logger.Level{
-		logger.ErrorLevel,
-		logger.FatalLevel,
+// Levels implements hyperlogger.Hook.
+func (*AlertHook) Levels() []hyperlogger.Level {
+	return []hyperlogger.Level{
+		hyperlogger.ErrorLevel,
+		hyperlogger.FatalLevel,
 	}
 }
 
@@ -113,7 +113,7 @@ func main() {
 	alertHook := &AlertHook{}
 
 	// Build the configuration
-	config := logger.NewConfigBuilder().
+	config := hyperlogger.NewConfigBuilder().
 		WithConsoleOutput().
 		WithDevelopmentDefaults().
 		WithField("service", "example-service").

@@ -45,7 +45,7 @@ import (
 	"github.com/hyp3rd/ewrap"
 	"github.com/mattn/go-isatty"
 
-	logger "github.com/hyp3rd/hyperlogger"
+	"github.com/hyp3rd/hyperlogger"
 	"github.com/hyp3rd/hyperlogger/internal/utils"
 )
 
@@ -270,7 +270,7 @@ type ConsoleWriter struct {
 	isTerminal bool
 	buffer     *bytes.Buffer
 	mu         sync.Mutex
-	style      map[logger.Level]struct {
+	style      map[hyperlogger.Level]struct {
 		color ColorCode
 		style Style
 	}
@@ -292,16 +292,16 @@ func NewConsoleWriter(out io.Writer, mode ColorMode) *ConsoleWriter {
 		mode:       mode,
 		isTerminal: IsTerminal(out),
 		buffer:     bytes.NewBuffer(make([]byte, 0, defaultBufferSize)),
-		style: map[logger.Level]struct {
+		style: map[hyperlogger.Level]struct {
 			color ColorCode
 			style Style
 		}{
-			logger.TraceLevel: {ColorWhite, StyleDim},
-			logger.DebugLevel: {ColorCyan, StyleNormal},
-			logger.InfoLevel:  {ColorGreen, StyleNormal},
-			logger.WarnLevel:  {ColorYellow, StyleBold},
-			logger.ErrorLevel: {ColorRed, StyleBold},
-			logger.FatalLevel: {ColorMagenta, StyleBold},
+			hyperlogger.TraceLevel: {ColorWhite, StyleDim},
+			hyperlogger.DebugLevel: {ColorCyan, StyleNormal},
+			hyperlogger.InfoLevel:  {ColorGreen, StyleNormal},
+			hyperlogger.WarnLevel:  {ColorYellow, StyleBold},
+			hyperlogger.ErrorLevel: {ColorRed, StyleBold},
+			hyperlogger.FatalLevel: {ColorMagenta, StyleBold},
 		},
 	}
 
@@ -430,7 +430,7 @@ func (w *ConsoleWriter) shouldUseColors() bool {
 
 // detectLevel attempts to determine the log level from the content.
 // This is a fast approximation that looks for level indicators in the first few bytes.
-func (*ConsoleWriter) detectLevel(p []byte) logger.Level {
+func (*ConsoleWriter) detectLevel(p []byte) hyperlogger.Level {
 	// Look for common level indicators in the first 32 bytes
 	head := p
 	if len(p) > maxLookupBytes {
@@ -439,19 +439,19 @@ func (*ConsoleWriter) detectLevel(p []byte) logger.Level {
 
 	switch {
 	case bytes.Contains(head, []byte("TRACE")):
-		return logger.TraceLevel
+		return hyperlogger.TraceLevel
 	case bytes.Contains(head, []byte("DEBUG")):
-		return logger.DebugLevel
+		return hyperlogger.DebugLevel
 	case bytes.Contains(head, []byte("INFO")):
-		return logger.InfoLevel
+		return hyperlogger.InfoLevel
 	case bytes.Contains(head, []byte("WARN")):
-		return logger.WarnLevel
+		return hyperlogger.WarnLevel
 	case bytes.Contains(head, []byte("ERROR")):
-		return logger.ErrorLevel
+		return hyperlogger.ErrorLevel
 	case bytes.Contains(head, []byte("FATAL")):
-		return logger.FatalLevel
+		return hyperlogger.FatalLevel
 	default:
-		return logger.InfoLevel
+		return hyperlogger.InfoLevel
 	}
 }
 

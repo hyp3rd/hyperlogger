@@ -659,6 +659,30 @@ func TestAdapter_CustomContextExtractors(t *testing.T) {
 	assert.Contains(t, output, `"custom":"value123"`)
 }
 
+func TestAdapter_CustomEncoderByName(t *testing.T) {
+	buf := &bytes.Buffer{}
+	name := "test-encoder-" + t.Name()
+	encoder := &testEncoder{}
+
+	registry := hyperlogger.NewEncoderRegistry()
+	require.NoError(t, registry.Register(name, encoder))
+
+	cfg := hyperlogger.Config{
+		Output:          buf,
+		Level:           hyperlogger.InfoLevel,
+		EncoderName:     name,
+		EncoderRegistry: registry,
+	}
+
+	loggerInstance, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	loggerInstance.Info("hello")
+
+	assert.Contains(t, buf.String(), "encoded:hello")
+	assert.Equal(t, 1, encoder.calls)
+}
+
 func TestAdapter_Sampling(t *testing.T) {
 	buf := &bytes.Buffer{}
 	cfg := hyperlogger.Config{
@@ -692,6 +716,26 @@ func TestAdapter_Sampling(t *testing.T) {
 	if !strings.Contains(lines[2], "always logged") {
 		t.Fatalf("warn level should bypass sampling: %v", lines[2])
 	}
+}
+
+type testEncoder struct {
+	calls int
+}
+
+func (e *testEncoder) Encode(entry *hyperlogger.Entry, _ *hyperlogger.Config, buf *bytes.Buffer) ([]byte, error) {
+	e.calls++
+	buf.Reset()
+	buf.WriteString("encoded:" + entry.Message)
+
+	return buf.Bytes(), nil
+}
+
+func (e *testEncoder) EstimateSize(entry *hyperlogger.Entry) int {
+	if entry == nil {
+		return 0
+	}
+
+	return len(entry.Message) + 8
 }
 
 func TestAdapter_GlobalHooks(t *testing.T) {

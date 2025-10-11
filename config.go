@@ -128,6 +128,12 @@ type Config struct {
 	AdditionalFields []Field
 	// Color configuration.
 	Color ColorConfig
+	// Encoder overrides the default encoder used for log entries.
+	Encoder Encoder
+	// EncoderName refers to a registered encoder to be loaded at runtime.
+	EncoderName string
+	// EncoderRegistry holds available encoders for name resolution.
+	EncoderRegistry *EncoderRegistry
 	// Sampling configures log sampling for high-volume scenarios.
 	Sampling SamplingConfig
 	// File configures file output settings when using file output.
@@ -166,8 +172,11 @@ func DefaultConfig() Config {
 			FileMode:         LogFilePermissions,
 			CompressionLevel: -1, // Default compression level
 		},
+		EncoderRegistry:   nil,
 		Hooks:             make([]HookConfig, 0),
 		ContextExtractors: nil,
+		Encoder:           nil,
+		EncoderName:       "",
 	}
 }
 

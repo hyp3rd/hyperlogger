@@ -3,20 +3,20 @@ package adapter
 import (
 	"sync/atomic"
 
-	logger "github.com/hyp3rd/hyperlogger"
+	"github.com/hyp3rd/hyperlogger"
 	"github.com/hyp3rd/hyperlogger/pkg/security"
 )
 
 type logSampler struct {
-	cfg           logger.SamplingConfig
+	cfg           hyperlogger.SamplingConfig
 	perLevel      bool
 	initial       uint64
 	thereafter    uint64
 	globalCounter atomic.Uint64
-	levelCounters [logger.FatalLevel + 1]*atomic.Uint64
+	levelCounters [hyperlogger.FatalLevel + 1]*atomic.Uint64
 }
 
-func newLogSampler(cfg logger.SamplingConfig) *logSampler {
+func newLogSampler(cfg hyperlogger.SamplingConfig) *logSampler {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -41,7 +41,7 @@ func newLogSampler(cfg logger.SamplingConfig) *logSampler {
 	}
 
 	if sampler.perLevel {
-		for level := logger.TraceLevel; level <= logger.FatalLevel; level++ {
+		for level := hyperlogger.TraceLevel; level <= hyperlogger.FatalLevel; level++ {
 			sampler.levelCounters[level] = &atomic.Uint64{}
 		}
 	}
@@ -49,25 +49,25 @@ func newLogSampler(cfg logger.SamplingConfig) *logSampler {
 	return sampler
 }
 
-func sanitizeSamplingConfig(cfg logger.SamplingConfig) logger.SamplingConfig {
+func sanitizeSamplingConfig(cfg hyperlogger.SamplingConfig) hyperlogger.SamplingConfig {
 	if cfg.Initial <= 0 {
-		cfg.Initial = logger.DefaultSamplingInitial
+		cfg.Initial = hyperlogger.DefaultSamplingInitial
 	}
 
 	if cfg.Thereafter <= 0 {
-		cfg.Thereafter = logger.DefaultSamplingThereafter
+		cfg.Thereafter = hyperlogger.DefaultSamplingThereafter
 	}
 
 	return cfg
 }
 
-func (s *logSampler) Allow(level logger.Level) bool {
+func (s *logSampler) Allow(level hyperlogger.Level) bool {
 	if s == nil {
 		return true
 	}
 
 	// Never sample warnings or higher so that critical events are always logged.
-	if level >= logger.WarnLevel {
+	if level >= hyperlogger.WarnLevel {
 		return true
 	}
 
@@ -85,7 +85,7 @@ func (s *logSampler) Allow(level logger.Level) bool {
 	return ((currentCount - s.initial) % s.thereafter) == 0
 }
 
-func (s *logSampler) counter(level logger.Level) *atomic.Uint64 {
+func (s *logSampler) counter(level hyperlogger.Level) *atomic.Uint64 {
 	if s.perLevel {
 		if int(level) < len(s.levelCounters) && s.levelCounters[level] != nil {
 			return s.levelCounters[level]

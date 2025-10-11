@@ -2,7 +2,9 @@ package output
 
 import (
 	"io"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hyp3rd/hyperlogger/internal/constants"
@@ -20,6 +22,18 @@ type AsyncConfig struct {
 	OverflowStrategy AsyncOverflowStrategy
 	// DropHandler is invoked with the dropped payload when overflow strategy discards logs.
 	DropHandler func([]byte)
+	// MetricsReporter receives periodic metrics about the async writer state.
+	MetricsReporter func(AsyncMetrics)
+	// RetryEnabled enables retry attempts on write failures.
+	RetryEnabled bool
+	// MaxRetries defines the number of retry attempts after the initial write.
+	MaxRetries int
+	// RetryBackoff is the base backoff duration between retries.
+	RetryBackoff time.Duration
+	// RetryBackoffMultiplier scales the backoff after each retry.
+	RetryBackoffMultiplier float64
+	// RetryMaxBackoff caps the retry backoff duration.
+	RetryMaxBackoff time.Duration
 }
 
 // AsyncWriter implements asynchronous writing to an io.Writer,
@@ -33,6 +47,22 @@ type AsyncWriter struct {
 	wg         sync.WaitGroup
 	closed     bool
 	closeMutex sync.Mutex
+
+	enqueuedCount  atomic.Uint64
+	processedCount atomic.Uint64
+	droppedCount   atomic.Uint64
+	writeErrors    atomic.Uint64
+	retryCount     atomic.Uint64
+}
+
+// AsyncMetrics provides insight into the internal state of the AsyncWriter.
+type AsyncMetrics struct {
+	Enqueued   uint64
+	Processed  uint64
+	Dropped    uint64
+	WriteError uint64
+	Retried    uint64
+	QueueDepth int
 }
 
 // AsyncOverflowStrategy defines how AsyncWriter behaves when buffer is full.
@@ -45,6 +75,10 @@ const (
 	AsyncOverflowBlock
 	// AsyncOverflowDropOldest discards the oldest buffered entry to make space for the new one.
 	AsyncOverflowDropOldest
+)
+
+const (
+	defaultRetryBackoff = 10
 )
 
 // NewAsyncWriter creates a new AsyncWriter that writes to the given writer asynchronously.
@@ -64,6 +98,22 @@ func NewAsyncWriter(out io.Writer, config AsyncConfig) *AsyncWriter {
 
 	if config.DropHandler == nil {
 		config.DropHandler = func([]byte) {}
+	}
+
+	if config.MaxRetries < 0 {
+		config.MaxRetries = 0
+	}
+
+	if config.RetryBackoff <= 0 {
+		config.RetryBackoff = defaultRetryBackoff * time.Millisecond
+	}
+
+	if config.RetryBackoffMultiplier <= 1 {
+		config.RetryBackoffMultiplier = 2
+	}
+
+	if config.RetryMaxBackoff <= 0 {
+		config.RetryMaxBackoff = config.RetryBackoff * defaultRetryBackoff
 	}
 
 	aw := &AsyncWriter{
@@ -97,18 +147,25 @@ func (w *AsyncWriter) Write(data []byte) (int, error) {
 	case AsyncOverflowBlock:
 		select {
 		case w.msgCh <- buf:
+			w.enqueuedCount.Add(1)
+			w.reportMetrics()
+
 			return len(data), nil
 		case <-w.stopCh:
 			return 0, ErrWriterClosed
 		}
 	case AsyncOverflowDropOldest:
 		if w.tryEnqueue(buf) {
+			w.reportMetrics()
+
 			return len(data), nil
 		}
 
 		w.discardOldest()
 
 		if w.tryEnqueue(buf) {
+			w.reportMetrics()
+
 			return len(data), nil
 		}
 
@@ -117,6 +174,8 @@ func (w *AsyncWriter) Write(data []byte) (int, error) {
 		return 0, ErrBufferFull
 	default:
 		if w.tryEnqueue(buf) {
+			w.reportMetrics()
+
 			return len(data), nil
 		}
 
@@ -180,6 +239,24 @@ func (w *AsyncWriter) Close() error {
 	return nil
 }
 
+// Metrics returns a snapshot of the current metrics counters.
+func (w *AsyncWriter) Metrics() AsyncMetrics {
+	return AsyncMetrics{
+		Enqueued:   w.enqueuedCount.Load(),
+		Processed:  w.processedCount.Load(),
+		Dropped:    w.droppedCount.Load(),
+		WriteError: w.writeErrors.Load(),
+		Retried:    w.retryCount.Load(),
+		QueueDepth: len(w.msgCh),
+	}
+}
+
+func (w *AsyncWriter) reportMetrics() {
+	if w.config.MetricsReporter != nil {
+		w.config.MetricsReporter(w.Metrics())
+	}
+}
+
 // start begins the background writing goroutine.
 func (w *AsyncWriter) start() {
 	w.wg.Add(1)
@@ -211,9 +288,35 @@ func (w *AsyncWriter) processLogs() {
 
 // writeMessage writes a single message to the underlying writer.
 func (w *AsyncWriter) writeMessage(msg []byte) {
-	_, err := w.out.Write(msg)
-	if err != nil && w.config.ErrorHandler != nil {
-		w.config.ErrorHandler(err)
+	attempt := 0
+	backoff := w.config.RetryBackoff
+
+	for {
+		_, err := w.out.Write(msg)
+		if err == nil {
+			w.processedCount.Add(1)
+			w.reportMetrics()
+
+			return
+		}
+
+		w.writeErrors.Add(1)
+
+		if w.config.ErrorHandler != nil {
+			w.config.ErrorHandler(err)
+		}
+
+		if !w.config.RetryEnabled || attempt >= w.config.MaxRetries {
+			w.reportMetrics()
+
+			return
+		}
+
+		attempt++
+
+		w.retryCount.Add(1)
+		time.Sleep(backoff)
+		backoff = time.Duration(math.Min(float64(w.config.RetryMaxBackoff), float64(backoff)*w.config.RetryBackoffMultiplier))
 	}
 }
 
@@ -261,6 +364,8 @@ func (w *AsyncWriter) discardOldest() {
 	case msg, ok := <-w.msgCh:
 		if ok {
 			w.config.DropHandler(msg)
+			w.droppedCount.Add(1)
+			w.reportMetrics()
 		}
 	default:
 	}
@@ -269,16 +374,21 @@ func (w *AsyncWriter) discardOldest() {
 // recordOverflow handles the case when a message cannot be enqueued due to a full buffer.
 func (w *AsyncWriter) recordOverflow(msg []byte) {
 	w.config.DropHandler(msg)
+	w.droppedCount.Add(1)
 
 	if w.config.ErrorHandler != nil {
 		w.config.ErrorHandler(ErrBufferFull)
 	}
+
+	w.reportMetrics()
 }
 
 // tryEnqueue attempts to enqueue a message without blocking.
 func (w *AsyncWriter) tryEnqueue(buf []byte) bool {
 	select {
 	case w.msgCh <- buf:
+		w.enqueuedCount.Add(1)
+
 		return true
 	default:
 		return false
