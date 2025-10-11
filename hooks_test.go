@@ -3,6 +3,7 @@ package hyperlogger
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hyp3rd/ewrap"
@@ -345,4 +346,47 @@ func TestStandardHook(t *testing.T) {
 			t.Errorf("Expected levels %v, got %v", levels, hook.Levels())
 		}
 	})
+}
+
+func TestFireRegisteredHooks(t *testing.T) {
+	defer UnregisterAllHooks()
+	UnregisterAllHooks()
+
+	called := false
+
+	RegisterHook(InfoLevel, func(ctx context.Context, entry *Entry) error {
+		called = true
+		if ctx == nil {
+			t.Fatalf("expected context to be propagated")
+		}
+
+		return nil
+	})
+
+	errors := FireRegisteredHooks(context.Background(), &Entry{Level: InfoLevel, Message: "test"})
+
+	if len(errors) != 0 {
+		for _, err := range errors {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+
+	if !called {
+		t.Fatalf("expected hook to be invoked")
+	}
+
+	UnregisterAllHooks()
+
+	RegisterHook(InfoLevel, func(ctx context.Context, entry *Entry) error {
+		return ewrap.New("fail")
+	})
+
+	errors = FireRegisteredHooks(context.Background(), &Entry{Level: InfoLevel, Message: "test"})
+	if len(errors) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(errors))
+	}
+
+	if !strings.Contains(errors[0].Error(), "fail") {
+		t.Fatalf("expected error to contain original message, got %v", errors[0])
+	}
 }

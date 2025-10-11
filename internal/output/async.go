@@ -16,6 +16,10 @@ type AsyncConfig struct {
 	WaitTimeout time.Duration
 	// ErrorHandler is called when an error occurs during async writing.
 	ErrorHandler func(error)
+	// OverflowStrategy controls what happens when the buffer is full.
+	OverflowStrategy AsyncOverflowStrategy
+	// DropHandler is invoked with the dropped payload when overflow strategy discards logs.
+	DropHandler func([]byte)
 }
 
 // AsyncWriter implements asynchronous writing to an io.Writer,
@@ -31,6 +35,18 @@ type AsyncWriter struct {
 	closeMutex sync.Mutex
 }
 
+// AsyncOverflowStrategy defines how AsyncWriter behaves when buffer is full.
+type AsyncOverflowStrategy int
+
+const (
+	// AsyncOverflowDropNewest drops the incoming log entry (default, previous behaviour).
+	AsyncOverflowDropNewest AsyncOverflowStrategy = iota
+	// AsyncOverflowBlock makes writers block until there is space in the buffer.
+	AsyncOverflowBlock
+	// AsyncOverflowDropOldest discards the oldest buffered entry to make space for the new one.
+	AsyncOverflowDropOldest
+)
+
 // NewAsyncWriter creates a new AsyncWriter that writes to the given writer asynchronously.
 func NewAsyncWriter(out io.Writer, config AsyncConfig) *AsyncWriter {
 	// Set defaults for config if needed
@@ -44,6 +60,10 @@ func NewAsyncWriter(out io.Writer, config AsyncConfig) *AsyncWriter {
 
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = func(error) {}
+	}
+
+	if config.DropHandler == nil {
+		config.DropHandler = func([]byte) {}
 	}
 
 	aw := &AsyncWriter{
@@ -69,21 +89,38 @@ func (w *AsyncWriter) Write(data []byte) (int, error) {
 		return 0, ErrWriterClosed
 	}
 
-	// Copy the buffer since the original might be reused
 	buf := make([]byte, len(data))
 	copy(buf, data)
 
-	// Try to send the message to the channel
-	select {
-	case w.msgCh <- buf:
-		return len(data), nil
-	default:
-		// Channel is full, either block or return an error
-		// Depending on application needs, you might want to block here
-		// or handle differently
-		if w.config.ErrorHandler != nil {
-			w.config.ErrorHandler(ErrBufferFull)
+	//nolint:exhaustive // output.AsyncOverflowDropNewest is the default behavior
+	switch w.config.OverflowStrategy {
+	case AsyncOverflowBlock:
+		select {
+		case w.msgCh <- buf:
+			return len(data), nil
+		case <-w.stopCh:
+			return 0, ErrWriterClosed
 		}
+	case AsyncOverflowDropOldest:
+		if w.tryEnqueue(buf) {
+			return len(data), nil
+		}
+
+		w.discardOldest()
+
+		if w.tryEnqueue(buf) {
+			return len(data), nil
+		}
+
+		w.recordOverflow(buf)
+
+		return 0, ErrBufferFull
+	default:
+		if w.tryEnqueue(buf) {
+			return len(data), nil
+		}
+
+		w.recordOverflow(buf)
 
 		return 0, ErrBufferFull
 	}
@@ -215,5 +252,35 @@ func (w *AsyncWriter) drainMessages() {
 		default:
 			return
 		}
+	}
+}
+
+// discardOldest removes the oldest message from the buffer to make space for a new one.
+func (w *AsyncWriter) discardOldest() {
+	select {
+	case msg, ok := <-w.msgCh:
+		if ok {
+			w.config.DropHandler(msg)
+		}
+	default:
+	}
+}
+
+// recordOverflow handles the case when a message cannot be enqueued due to a full buffer.
+func (w *AsyncWriter) recordOverflow(msg []byte) {
+	w.config.DropHandler(msg)
+
+	if w.config.ErrorHandler != nil {
+		w.config.ErrorHandler(ErrBufferFull)
+	}
+}
+
+// tryEnqueue attempts to enqueue a message without blocking.
+func (w *AsyncWriter) tryEnqueue(buf []byte) bool {
+	select {
+	case w.msgCh <- buf:
+		return true
+	default:
+		return false
 	}
 }

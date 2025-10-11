@@ -1,7 +1,10 @@
 package output
 
 import (
+	"io"
 	"strconv"
+
+	"github.com/hyp3rd/ewrap"
 )
 
 // Writer is an interface for log output writers.
@@ -12,6 +15,43 @@ type Writer interface {
 	Sync() error
 	// Close closes the writer and releases any resources.
 	Close() error
+}
+
+type writerAdapter struct {
+	writer io.Writer
+}
+
+// NewWriterAdapter wraps a basic io.Writer into a Writer interface implementation used by the output package.
+func NewWriterAdapter(w io.Writer) Writer {
+	return &writerAdapter{writer: w}
+}
+
+func (w *writerAdapter) Write(p []byte) (int, error) {
+	bytes, err := w.writer.Write(p)
+	if err != nil {
+		return bytes, ewrap.Wrap(err, "failed to write to writer")
+	}
+
+	return bytes, nil
+}
+
+func (w *writerAdapter) Sync() error {
+	if syncer, ok := w.writer.(interface{ Sync() error }); ok {
+		return syncer.Sync()
+	}
+
+	return nil
+}
+
+func (w *writerAdapter) Close() error {
+	if closer, ok := w.writer.(io.Closer); ok {
+		err := closer.Close()
+		if err != nil {
+			return ewrap.Wrap(err, "failed to close writer")
+		}
+	}
+
+	return nil
 }
 
 // WriteResult holds the results of a write operation to a specific Writer.

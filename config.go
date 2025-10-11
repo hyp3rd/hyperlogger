@@ -1,6 +1,7 @@
 package hyperlogger
 
 import (
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -42,6 +43,28 @@ type SamplingConfig struct {
 	PerLevelThreshold bool
 }
 
+// AsyncOverflowStrategy defines how the async writer handles a full buffer.
+type AsyncOverflowStrategy uint8
+
+const (
+	// AsyncOverflowDropNewest drops the incoming log entry when the buffer is full.
+	AsyncOverflowDropNewest AsyncOverflowStrategy = iota
+	// AsyncOverflowBlock blocks until there is space in the buffer.
+	AsyncOverflowBlock
+	// AsyncOverflowDropOldest discards the oldest buffered log entry to make room for a new one.
+	AsyncOverflowDropOldest
+)
+
+// IsValid reports whether the strategy value is recognised.
+func (s AsyncOverflowStrategy) IsValid() bool {
+	switch s {
+	case AsyncOverflowDropNewest, AsyncOverflowBlock, AsyncOverflowDropOldest:
+		return true
+	default:
+		return false
+	}
+}
+
 // FileConfig holds configuration specific to file-based logging.
 type FileConfig struct {
 	// Path is the path to the log file
@@ -72,6 +95,9 @@ type HookConfig struct {
 	Hook Hook
 }
 
+// ContextExtractor transforms a context into structured fields.
+type ContextExtractor func(ctx context.Context) []Field
+
 // Config holds configuration for the logger.
 type Config struct {
 	// Level is the minimum level to log.
@@ -92,47 +118,42 @@ type Config struct {
 	EnableAsync bool
 	// AsyncBufferSize sets the size of the async log buffer.
 	AsyncBufferSize int
+	// AsyncOverflowStrategy controls how async logging behaves when the buffer is full.
+	AsyncOverflowStrategy AsyncOverflowStrategy
+	// AsyncDropHandler is invoked when the async writer drops a log entry.
+	AsyncDropHandler func([]byte)
 	// DisableTimestamp disables timestamp in log entries.
 	DisableTimestamp bool
 	// AdditionalFields adds these fields to all log entries.
 	AdditionalFields []Field
 	// Color configuration.
 	Color ColorConfig
-
 	// Sampling configures log sampling for high-volume scenarios.
 	Sampling SamplingConfig
-
 	// File configures file output settings when using file output.
 	File FileConfig
-
-	// FilePath is a convenience field for simple file output configuration.
-	FilePath string
-
-	// FileMaxSize is a convenience field for simple rotation configuration (in bytes).
-	FileMaxSize int64
-
-	// FileCompress is a convenience field for simple compression configuration.
-	FileCompress bool
-
 	// Hooks contains hooks to be called during logging.
 	Hooks []HookConfig
+	// ContextExtractors apply additional enrichment from context values.
+	ContextExtractors []ContextExtractor
 }
 
 // DefaultConfig returns the default logger configuration.
 func DefaultConfig() Config {
 	return Config{
 		// Set a default output destination (os.Stdout)
-		Output:           os.Stdout,
-		Level:            DefaultLevel,
-		EnableStackTrace: true,
-		EnableCaller:     true,
-		TimeFormat:       DefaultTimeFormat,
-		EnableJSON:       true,
-		BufferSize:       DefaultBufferSize,
-		EnableAsync:      true, // Enable async logging by default for better performance
-		AsyncBufferSize:  DefaultAsyncBufferSize,
-		AdditionalFields: make([]Field, 0), // Initialize empty slice
-		Color:            DefaultColorConfig(),
+		Output:                os.Stdout,
+		Level:                 DefaultLevel,
+		EnableStackTrace:      true,
+		EnableCaller:          true,
+		TimeFormat:            DefaultTimeFormat,
+		EnableJSON:            true,
+		BufferSize:            DefaultBufferSize,
+		EnableAsync:           true, // Enable async logging by default for better performance
+		AsyncBufferSize:       DefaultAsyncBufferSize,
+		AsyncOverflowStrategy: AsyncOverflowDropNewest,
+		AdditionalFields:      make([]Field, 0), // Initialize empty slice
+		Color:                 DefaultColorConfig(),
 		Sampling: SamplingConfig{
 			Enabled:           false,
 			Initial:           DefaultSamplingInitial,
@@ -145,7 +166,8 @@ func DefaultConfig() Config {
 			FileMode:         LogFilePermissions,
 			CompressionLevel: -1, // Default compression level
 		},
-		Hooks: make([]HookConfig, 0),
+		Hooks:             make([]HookConfig, 0),
+		ContextExtractors: nil,
 	}
 }
 

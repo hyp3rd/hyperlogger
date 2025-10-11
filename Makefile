@@ -7,6 +7,9 @@ BUF_VERSION = v1.58.0
 test:
 	RUN_INTEGRATION_TEST=yes go test -v -timeout 1m -cover ./...
 
+bench:
+	go test -bench=. -benchtime=3s -benchmem -run=^-memprofile=mem.out ./...
+
 update-deps:
 	go get -v -u ./...
 	go mod tidy
@@ -69,7 +72,7 @@ prepare-toolchain:
 	pre-commit validate-config || pre-commit install && pre-commit install-hooks
 
 
-lint: prepare-toolchain
+lint: prepare-toolchain vet
 	@echo "Running gci..."
 	@for file in ${GOFILES}; do \
 		gci write -s standard -s default -s blank -s dot -s "prefix(github.com/hyp3rd/hyperlogger)" -s localmodule --skip-vendor --skip-generated $$file; \
@@ -83,6 +86,12 @@ lint: prepare-toolchain
 
 	@echo "\nRunning golangci-lint $(GOLANGCI_LINT_VERSION)..."
 	golangci-lint run -v --fix ./...
+
+vet:
+	@echo "Running go vet..."
+
+	$(call check_command_exists,shadow) || go install golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow@latest
+	go vet -vettool=$(which shadow)
 
 # check_command_exists is a helper function that checks if a command exists.
 define check_command_exists
@@ -109,4 +118,4 @@ help:
 	@echo
 	@echo
 	@echo "For more information, see the project README."
-.PHONY: prepare-toolchain test vet update-deps lint run-dev stop-dev frontend-dev help
+.PHONY: prepare-toolchain test bench vet update-deps lint help

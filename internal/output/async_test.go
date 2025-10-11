@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hyp3rd/ewrap"
+	"github.com/stretchr/testify/require"
 
 	"github.com/hyp3rd/hyperlogger/internal/constants"
 )
@@ -159,6 +160,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 		writer.writeDelay = 100 * time.Millisecond
 
 		errCalled := false
+		dropCalled := false
 
 		async := NewAsyncWriter(writer, AsyncConfig{
 			BufferSize: 1,
@@ -166,6 +168,9 @@ func TestAsyncWriter_Write(t *testing.T) {
 				if errors.Is(err, ErrBufferFull) {
 					errCalled = true
 				}
+			},
+			DropHandler: func([]byte) {
+				dropCalled = true
 			},
 		})
 		defer async.Close()
@@ -184,6 +189,84 @@ func TestAsyncWriter_Write(t *testing.T) {
 
 		if !errCalled {
 			t.Error("Error handler not called for buffer full")
+		}
+
+		if !dropCalled {
+			t.Error("Drop handler not invoked for overflow")
+		}
+	})
+
+	t.Run("drop oldest strategy", func(t *testing.T) {
+		writer := newMockWriter()
+		writer.writeDelay = 100 * time.Millisecond
+
+		var dropped [][]byte
+
+		async := NewAsyncWriter(writer, AsyncConfig{
+			BufferSize:       1,
+			OverflowStrategy: AsyncOverflowDropOldest,
+			DropHandler: func(payload []byte) {
+				buf := make([]byte, len(payload))
+				copy(buf, payload)
+				dropped = append(dropped, buf)
+			},
+		})
+		defer async.Close()
+
+		if _, err := async.Write([]byte("first")); err != nil {
+			t.Fatalf("first write failed: %v", err)
+		}
+
+		if _, err := async.Write([]byte("second")); err != nil {
+			t.Fatalf("second write should succeed with drop oldest, got %v", err)
+		}
+
+		time.Sleep(150 * time.Millisecond)
+		_ = async.Flush()
+
+		written := writer.getWrittenData()
+		if len(written) == 0 || string(written[len(written)-1]) != "second" {
+			t.Fatalf("expected latest message to be written, got %v", written)
+		}
+
+		if len(dropped) == 0 || string(dropped[0]) != "first" {
+			t.Fatalf("expected first message to be dropped, got %v", dropped)
+		}
+	})
+
+	t.Run("block strategy", func(t *testing.T) {
+		writer := newMockWriter()
+		writer.writeDelay = 50 * time.Millisecond
+
+		async := NewAsyncWriter(writer, AsyncConfig{
+			BufferSize:       1,
+			OverflowStrategy: AsyncOverflowBlock,
+		})
+		defer async.Close()
+
+		if _, err := async.Write([]byte("first")); err != nil {
+			t.Fatalf("first write failed: %v", err)
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := async.Write([]byte("second"))
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("write did not complete in time")
+		}
+
+		time.Sleep(150 * time.Millisecond)
+		_ = async.Flush()
+
+		written := writer.getWrittenData()
+		if len(written) < 2 {
+			t.Fatalf("expected both messages to be written, got %v", written)
 		}
 	})
 }

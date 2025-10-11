@@ -21,6 +21,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.True(t, config.EnableJSON)
 	assert.Equal(t, DefaultBufferSize, config.BufferSize)
 	assert.Equal(t, DefaultAsyncBufferSize, config.AsyncBufferSize)
+	assert.Equal(t, AsyncOverflowDropNewest, config.AsyncOverflowStrategy)
 	assert.Empty(t, config.AdditionalFields)
 }
 

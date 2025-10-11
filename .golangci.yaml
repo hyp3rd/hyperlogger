@@ -228,6 +228,7 @@ linters:
         - const C
         - r *http.Request
         - w http.ResponseWriter
+        - w io.Writer
         - T any
         - m map[string]int
         - q *caches.Query[any]

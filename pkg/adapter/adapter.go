@@ -8,7 +8,9 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,47 +56,18 @@ const (
 	asciiControlEnd   = 126 // End of ASCII printable characters (~)
 )
 
+// ErrNoFilePathSet indicates that the file path is not set for file output.
+var ErrNoFilePathSet = ewrap.New("file path not set for file output")
+
 // bufferPoolBucket represents a size category for buffer pooling.
 type bufferPoolBucket struct {
 	size int
 	pool sync.Pool
 }
 
-// Adapter implements the logger.Logger interface.
-//
-//nolint:containedctx
-type Adapter struct {
-	config       *logger.Config
-	customHooks  map[logger.Level][]logger.LogHookFunc
-	hookRegistry *logger.HookRegistry
-	level        *atomic.Uint32
-	ctx          context.Context
-	fields       []logger.Field
-
-	// Unified buffer pool system
-	bufferPool []*bufferPoolBucket
-}
-
-// NewAdapter creates a new logger adapter with the given configuration.
-func NewAdapter(ctx context.Context, config logger.Config) (logger.Logger, error) {
-	err := validateConfig(&config)
-	if err != nil {
-		return nil, err
-	}
-
-	// Initialize adapter
-	adapter := &Adapter{
-		level:        new(atomic.Uint32),
-		customHooks:  make(map[logger.Level][]logger.LogHookFunc),
-		hookRegistry: logger.NewHookRegistry(),
-		fields:       cloneFields(config.AdditionalFields),
-		ctx:          ctx,
-	}
-
-	adapter.level.Store(uint32(config.Level))
-
-	// Set up unified buffer pool with multiple size buckets
-	adapter.bufferPool = []*bufferPoolBucket{
+// newBufferPool creates the pooled buffers used to minimize allocations per log entry.
+func newBufferPool() []*bufferPoolBucket {
+	return []*bufferPoolBucket{
 		{
 			size: smallBufferSize,
 			pool: sync.Pool{
@@ -128,13 +101,59 @@ func NewAdapter(ctx context.Context, config logger.Config) (logger.Logger, error
 			},
 		},
 	}
+}
+
+// Adapter implements the logger.Logger interface.
+//
+//nolint:containedctx
+type Adapter struct {
+	config       *logger.Config
+	hookRegistry *logger.HookRegistry
+	level        *atomic.Uint32
+	ctx          context.Context
+	fields       []logger.Field
+	sampler      *logSampler
+
+	// Unified buffer pool system
+	bufferPool []*bufferPoolBucket
+}
+
+// NewAdapter creates a new logger adapter with the given configuration.
+func NewAdapter(ctx context.Context, config logger.Config) (logger.Logger, error) {
+	err := prepareOutput(&config)
+	if err != nil {
+		return nil, err
+	}
+
+	err = validateConfig(&config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize adapter
+	adapter := &Adapter{
+		config:       &config,
+		level:        new(atomic.Uint32),
+		hookRegistry: logger.NewHookRegistry(),
+		fields:       cloneFields(config.AdditionalFields),
+		ctx:          ctx,
+	}
+
+	adapter.level.Store(uint32(config.Level))
+
+	// Set up unified buffer pool with multiple size buckets
+	adapter.bufferPool = newBufferPool()
+
+	adapter.sampler = newLogSampler(config.Sampling)
 
 	// Wrap output in AsyncWriter if async logging is enabled
 	if config.EnableAsync {
 		asyncConfig := output.AsyncConfig{
-			BufferSize:   config.AsyncBufferSize,
-			WaitTimeout:  constants.DefaultTimeout,
-			ErrorHandler: func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
+			BufferSize:       config.AsyncBufferSize,
+			WaitTimeout:      constants.DefaultTimeout,
+			ErrorHandler:     func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
+			OverflowStrategy: convertOverflowStrategy(config.AsyncOverflowStrategy),
+			DropHandler:      config.AsyncDropHandler,
 		}
 
 		adapter.config.Output = output.NewAsyncWriter(config.Output, asyncConfig)
@@ -243,10 +262,10 @@ func (a *Adapter) WithContext(ctx context.Context) logger.Logger {
 		config:       a.config,
 		level:        a.level,
 		fields:       a.fields,
-		customHooks:  a.customHooks,
 		hookRegistry: a.hookRegistry,
 		ctx:          ctx,
 		bufferPool:   a.bufferPool,
+		sampler:      a.sampler,
 	}
 
 	return newAdapter
@@ -268,10 +287,10 @@ func (a *Adapter) WithFields(fields ...logger.Field) logger.Logger {
 		config:       a.config,
 		level:        a.level,
 		fields:       mergeFields(a.fields, fields),
-		customHooks:  a.customHooks,
 		hookRegistry: a.hookRegistry,
 		ctx:          a.ctx,
 		bufferPool:   a.bufferPool,
+		sampler:      a.sampler,
 	}
 
 	return newAdapter
@@ -288,6 +307,7 @@ func (a *Adapter) WithError(err error) logger.Logger {
 
 // GetLevel returns the current logging level.
 func (a *Adapter) GetLevel() logger.Level {
+	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
 	return logger.Level(a.level.Load())
 }
 
@@ -324,6 +344,10 @@ func validateConfig(config *logger.Config) error {
 		return ewrap.New("output writer is required")
 	}
 
+	if !config.AsyncOverflowStrategy.IsValid() {
+		config.AsyncOverflowStrategy = logger.AsyncOverflowDropNewest
+	}
+
 	return nil
 }
 
@@ -337,6 +361,87 @@ func cloneFields(fields []logger.Field) []logger.Field {
 	copy(cloned, fields)
 
 	return cloned
+}
+
+func prepareOutput(config *logger.Config) error {
+	fileWriter, err := buildFileWriter(config)
+	if err != nil && !errors.Is(err, ErrNoFilePathSet) {
+		return err
+	}
+	//nolint:revive // enforce-switch-style: switch must have a default case clause: no need.
+	switch {
+	case config.Output == nil && fileWriter != nil:
+		config.Output = fileWriter
+	case config.Output != nil && fileWriter != nil:
+		baseWriter, err := toOutputWriter(config.Output)
+		if err != nil {
+			return err
+		}
+
+		multi, err := output.NewMultiWriter(baseWriter, fileWriter)
+		if err != nil {
+			return err
+		}
+
+		config.Output = multi
+	}
+
+	return nil
+}
+
+func buildFileWriter(config *logger.Config) (output.Writer, error) {
+	path := config.File.Path
+	if path == "" {
+		return nil, ErrNoFilePathSet
+	}
+
+	fileCfg := output.FileConfig{
+		Path:     path,
+		Compress: config.File.Compress,
+	}
+
+	if maxSize := config.File.MaxSizeBytes; maxSize > 0 {
+		fileCfg.MaxSize = maxSize
+	}
+
+	if mode := config.File.FileMode; mode != 0 {
+		fileCfg.FileMode = mode
+	}
+
+	writer, err := output.NewFileWriter(fileCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	config.File.Path = path
+	config.File.MaxSizeBytes = fileCfg.MaxSize
+	config.File.Compress = fileCfg.Compress
+
+	return writer, nil
+}
+
+func toOutputWriter(w io.Writer) (output.Writer, error) {
+	if w == nil {
+		return nil, ewrap.New("output writer cannot be nil")
+	}
+
+	if ow, ok := w.(output.Writer); ok {
+		return ow, nil
+	}
+
+	return output.NewWriterAdapter(w), nil
+}
+
+func convertOverflowStrategy(strategy logger.AsyncOverflowStrategy) output.AsyncOverflowStrategy {
+	//nolint:exhaustive // output.AsyncOverflowDropNewest is the default behavior
+	switch strategy {
+	case logger.AsyncOverflowBlock:
+		return output.AsyncOverflowBlock
+	case logger.AsyncOverflowDropOldest:
+		return output.AsyncOverflowDropOldest
+	default:
+		return output.AsyncOverflowDropNewest
+	}
 }
 
 // mergeFields combines multiple field slices into a single slice, avoiding duplicates.
@@ -470,32 +575,52 @@ func formatCallerInfo(file string, line int, funcName string, shortPath bool) st
 }
 
 // withContext adds context values to the fields.
-func withContext(ctx context.Context, fields []logger.Field) []logger.Field {
+func withContext(ctx context.Context, fields []logger.Field, cfg *logger.Config) []logger.Field {
 	if ctx == nil {
 		return fields
 	}
 
-	// Add trace ID if present
-	if traceID, ok := ctx.Value(constants.TraceIDKey).(string); ok && traceID != "" {
-		fields = append(fields, logger.Field{Key: "trace_id", Value: traceID})
+	extras := make([]logger.Field, 0, len(constants.ContextKeyMap()))
+
+	extras = extractContextKeys(ctx, extras)
+
+	if cfg != nil {
+		for _, extractor := range cfg.ContextExtractors {
+			if extractor == nil {
+				continue
+			}
+
+			if extracted := extractor(ctx); len(extracted) > 0 {
+				extras = append(extras, extracted...)
+			}
+		}
 	}
 
-	// Add request ID if present
-	if requestID, ok := ctx.Value(constants.RequestIDKey).(string); ok && requestID != "" {
-		fields = append(fields, logger.Field{Key: "request_id", Value: requestID})
+	if len(extras) == 0 {
+		return fields
 	}
 
-	// Add namespace if present
-	if ns, ok := ctx.Value(constants.NamespaceKey{}).(string); ok && ns != "" {
-		fields = append(fields, logger.Field{Key: "namespace", Value: ns})
+	return mergeFields(fields, extras)
+}
+
+// extractContextKeys extracts known context keys and adds them as fields.
+func extractContextKeys(ctx context.Context, extras []logger.Field) []logger.Field {
+	if ctx == nil {
+		return extras
 	}
 
-	return fields
+	for key, val := range constants.ContextKeyMap() {
+		if v, ok := ctx.Value(val).(string); ok && v != "" {
+			extras = append(extras, logger.Field{Key: key, Value: v})
+		}
+	}
+
+	return extras
 }
 
 // attachStackTrace appends a stack trace to the entry when enabled for high-severity logs.
 func (a *Adapter) attachStackTrace(entry *logger.Entry) {
-	if entry == nil {
+	if entry == nil || a == nil || a.config == nil {
 		return
 	}
 
@@ -870,8 +995,13 @@ func formatJSONOutput(builder *bytes.Buffer, entry *logger.Entry, config *logger
 
 // log handles the common logging logic for all log levels.
 func (a *Adapter) log(level logger.Level, msg string) {
+	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
 	if level < logger.Level(a.level.Load()) {
 		return // Skip logging if the level is below our configured level
+	}
+
+	if a.sampler != nil && !a.sampler.Allow(level) {
+		return
 	}
 
 	// Create log entry with cloned base fields to avoid cross-request mutation.
@@ -882,7 +1012,7 @@ func (a *Adapter) log(level logger.Level, msg string) {
 	}
 
 	// Add context values to fields
-	entry.Fields = withContext(a.ctx, entry.Fields)
+	entry.Fields = withContext(a.ctx, entry.Fields, a.config)
 
 	// Attach stack trace for error-level logs when configured
 	a.attachStackTrace(entry)
@@ -922,6 +1052,7 @@ func (a *Adapter) exit(entry *logger.Entry, code int) {
 	err := a.Sync()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to sync logs before exit: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Original fatal log: %s\n", entry.Message)
 	}
 
 	os.Exit(code)
@@ -929,8 +1060,13 @@ func (a *Adapter) exit(entry *logger.Entry, code int) {
 
 // processHooks executes registered hooks and handles any errors they produce.
 func (a *Adapter) processHooks(entry *logger.Entry) {
-	// Fire hooks and collect any errors
-	hookErrs := a.hookRegistry.FireHooks(entry)
+	var hookErrs []error
+
+	if a.hookRegistry != nil {
+		hookErrs = append(hookErrs, a.hookRegistry.FireHooks(entry)...)
+	}
+
+	hookErrs = append(hookErrs, logger.FireRegisteredHooks(a.ctx, entry)...)
 
 	// Log hook errors if any occurred
 	for _, err := range hookErrs {

@@ -131,6 +131,51 @@ func NewHookRegistry() *HookRegistry {
 	}
 }
 
+// FireRegisteredHooks executes the global LogHookFuncs registered via RegisterHook/RegisterGlobalHook
+// and returns any errors they produced.
+func FireRegisteredHooks(ctx context.Context, entry *Entry) []error {
+	if entry == nil {
+		return nil
+	}
+
+	funcs := collectHookFuncs(entry.Level)
+	if len(funcs) == 0 {
+		return nil
+	}
+
+	var errs []error
+
+	for _, fn := range funcs {
+		if fn == nil {
+			continue
+		}
+
+		err := fn(ctx, entry)
+		if err != nil {
+			err = ewrap.Wrap(err, "hook execution failed")
+			errs = append(errs, err)
+		}
+	}
+
+	return errs
+}
+
+func collectHookFuncs(level Level) []LogHookFunc {
+	hooks.RLock()
+	defer hooks.RUnlock()
+
+	if level.IsValid() {
+		return append([]LogHookFunc(nil), hooks.funcs[level]...)
+	}
+
+	var all []LogHookFunc
+	for l := TraceLevel; l <= FatalLevel; l++ {
+		all = append(all, hooks.funcs[l]...)
+	}
+
+	return all
+}
+
 // AddHook adds a named hook to the registry.
 func (r *HookRegistry) AddHook(name string, hook Hook) error {
 	r.mu.Lock()

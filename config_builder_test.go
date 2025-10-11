@@ -2,6 +2,7 @@ package hyperlogger
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -63,10 +64,6 @@ func TestWithConsoleOutput(t *testing.T) {
 func TestWithFileOutput(t *testing.T) {
 	path := "/var/log/test.log"
 	config := NewConfigBuilder().WithFileOutput(path).Build()
-
-	if config.FilePath != path {
-		t.Error("WithFileOutput did not set FilePath correctly")
-	}
 
 	if config.File.Path != path {
 		t.Error("WithFileOutput did not set File.Path correctly")
@@ -169,6 +166,50 @@ func TestWithAsyncBufferSize(t *testing.T) {
 	}
 }
 
+func TestWithAsyncOverflowStrategy(t *testing.T) {
+	config := NewConfigBuilder().WithAsyncOverflowStrategy(AsyncOverflowBlock).Build()
+
+	if config.AsyncOverflowStrategy != AsyncOverflowBlock {
+		t.Error("WithAsyncOverflowStrategy did not set strategy correctly")
+	}
+}
+
+func TestWithAsyncDropHandler(t *testing.T) {
+	called := false
+	handler := func([]byte) { called = true }
+
+	config := NewConfigBuilder().WithAsyncDropHandler(handler).Build()
+
+	if config.AsyncDropHandler == nil {
+		t.Fatal("expected drop handler to be set")
+	}
+
+	config.AsyncDropHandler([]byte("test"))
+
+	if !called {
+		t.Error("drop handler was not invoked")
+	}
+}
+
+func TestWithContextExtractor(t *testing.T) {
+	var saw bool
+	extractor := func(ctx context.Context) []Field {
+		saw = true
+		return []Field{{Key: "example", Value: "value"}}
+	}
+
+	config := NewConfigBuilder().WithContextExtractor(extractor).Build()
+
+	if len(config.ContextExtractors) != 1 {
+		t.Fatalf("expected 1 extractor, got %d", len(config.ContextExtractors))
+	}
+
+	fields := config.ContextExtractors[0](context.Background())
+	if !saw || len(fields) != 1 {
+		t.Fatalf("context extractor not invoked correctly")
+	}
+}
+
 func TestWithField(t *testing.T) {
 	config := NewConfigBuilder().WithField("test", "value").Build()
 
@@ -201,14 +242,6 @@ func TestWithFileRotation(t *testing.T) {
 	maxSize := int64(1024 * 1024 * 100)
 	compress := true
 	config := NewConfigBuilder().WithFileRotation(maxSize, compress).Build()
-
-	if config.FileMaxSize != maxSize {
-		t.Error("WithFileRotation did not set FileMaxSize correctly")
-	}
-
-	if config.FileCompress != compress {
-		t.Error("WithFileRotation did not set FileCompress correctly")
-	}
 
 	if config.File.MaxSizeBytes != maxSize {
 		t.Error("WithFileRotation did not set File.MaxSizeBytes correctly")

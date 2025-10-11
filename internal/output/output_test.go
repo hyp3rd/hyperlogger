@@ -13,6 +13,30 @@ import (
 	logger "github.com/hyp3rd/hyperlogger"
 )
 
+type closableBuffer struct {
+	*bytes.Buffer
+	closed bool
+}
+
+func (c *closableBuffer) Close() error {
+	c.closed = true
+
+	return nil
+}
+
+func TestNewWriterAdapter(t *testing.T) {
+	cb := &closableBuffer{Buffer: bytes.NewBuffer(nil)}
+	adapter := NewWriterAdapter(cb)
+
+	_, err := adapter.Write([]byte("hello"))
+	require.NoError(t, err)
+	assert.Equal(t, "hello", cb.String())
+
+	assert.NoError(t, adapter.Sync(), "sync should succeed even if unsupported")
+	assert.NoError(t, adapter.Close())
+	assert.True(t, cb.closed, "close should be forwarded to underlying writer")
+}
+
 func TestNewFileWriter(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "test.log")

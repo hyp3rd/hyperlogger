@@ -4,8 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hyp3rd/ewrap"
 	"github.com/stretchr/testify/assert"
@@ -88,19 +94,19 @@ func TestAdapter_WithContext(t *testing.T) {
 		},
 		{
 			name:           "context with trace_id",
-			ctx:            context.WithValue(context.Background(), constants.TraceIDKey, "123"),
+			ctx:            context.WithValue(context.Background(), constants.TraceKey{}, "123"),
 			expectedFields: 1,
 		},
 		{
 			name:           "context with request_id",
-			ctx:            context.WithValue(context.Background(), constants.RequestIDKey, "456"),
+			ctx:            context.WithValue(context.Background(), constants.RequestKey{}, "456"),
 			expectedFields: 1,
 		},
 		{
 			name: "context with both ids",
 			ctx: context.WithValue(
-				context.WithValue(context.Background(), constants.TraceIDKey, "123"),
-				constants.RequestIDKey,
+				context.WithValue(context.Background(), constants.TraceKey{}, "123"),
+				constants.RequestKey{},
 				"456",
 			),
 			expectedFields: 2,
@@ -529,6 +535,256 @@ func TestAdapter_JSONFormatting(t *testing.T) {
 	}
 }
 
+func TestAdapter_DisableTimestamp_TextOutput(t *testing.T) {
+	buf := &bytes.Buffer{}
+	cfg := hyperlogger.Config{
+		Output:           buf,
+		EnableJSON:       false,
+		Level:            hyperlogger.InfoLevel,
+		DisableTimestamp: true,
+		EnableCaller:     false,
+		TimeFormat:       time.RFC3339,
+	}
+
+	adapter, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	adapter.Info("message without timestamp")
+
+	output := buf.String()
+	require.NotEmpty(t, output)
+
+	firstRune, _ := utf8.DecodeRuneInString(output)
+	assert.Equal(t, '[', firstRune, "expected log line to start with '[' when timestamp disabled")
+}
+
+func TestAdapter_DisableTimestamp_JSONOutput(t *testing.T) {
+	buf := &bytes.Buffer{}
+	cfg := hyperlogger.Config{
+		Output:           buf,
+		EnableJSON:       true,
+		Level:            hyperlogger.InfoLevel,
+		DisableTimestamp: true,
+		TimeFormat:       time.RFC3339,
+	}
+
+	adapter, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	adapter.Info("json without timestamp")
+
+	output := buf.String()
+	assert.NotContains(t, output, `"time":`, "expected JSON logs to omit time field when timestamp disabled")
+}
+
+func TestAdapter_AttachStackTrace(t *testing.T) {
+	buf := &bytes.Buffer{}
+	cfg := hyperlogger.Config{
+		Output:           buf,
+		EnableJSON:       true,
+		Level:            hyperlogger.InfoLevel,
+		EnableStackTrace: true,
+	}
+
+	adapter, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	adapter.Error("failure")
+
+	output := buf.String()
+	assert.Contains(t, output, `"stack":"`, "expected stack trace when EnableStackTrace is true")
+	assert.Contains(t, output, `"message":"failure"`)
+
+	buf.Reset()
+
+	cfg.EnableStackTrace = false
+	adapterNoStack, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	adapterNoStack.Error("failure no stack")
+	assert.NotContains(t, buf.String(), `"stack":"`, "did not expect stack trace when disabled")
+}
+
+func TestAdapter_ContextDoesNotLeakBetweenLogs(t *testing.T) {
+	buf := &bytes.Buffer{}
+	cfg := hyperlogger.Config{
+		Output:     buf,
+		EnableJSON: true,
+		Level:      hyperlogger.InfoLevel,
+	}
+
+	loggerWithCtx, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	ctx := context.WithValue(context.Background(), constants.TraceKey{}, "trace-123")
+	loggerWithCtx.WithContext(ctx).Info("with context")
+	loggerWithCtx.Info("without context")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	require.Len(t, lines, 2)
+
+	assert.Contains(t, lines[0], `"trace_id":"trace-123"`)
+	assert.NotContains(t, lines[1], `"trace_id"`, "context fields should not leak into subsequent logs")
+}
+
+func TestAdapter_CustomContextExtractors(t *testing.T) {
+	buf := &bytes.Buffer{}
+	extractorCalled := false
+	type customContextKey struct{}
+	cfg := hyperlogger.Config{
+		Output:     buf,
+		EnableJSON: true,
+		Level:      hyperlogger.InfoLevel,
+		ContextExtractors: []hyperlogger.ContextExtractor{
+			func(ctx context.Context) []hyperlogger.Field {
+				extractorCalled = true
+				if val, ok := ctx.Value(customContextKey{}).(string); ok && val != "" {
+					return []hyperlogger.Field{{Key: "custom", Value: val}}
+				}
+
+				return nil
+			},
+		},
+	}
+
+	loggerInstance, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	ctx := context.WithValue(context.Background(), customContextKey{}, "value123")
+	loggerInstance.WithContext(ctx).Info("custom message")
+
+	require.True(t, extractorCalled)
+
+	output := buf.String()
+	assert.Contains(t, output, `"custom":"value123"`)
+}
+
+func TestAdapter_Sampling(t *testing.T) {
+	buf := &bytes.Buffer{}
+	cfg := hyperlogger.Config{
+		Output:     buf,
+		Level:      hyperlogger.InfoLevel,
+		EnableJSON: true,
+		Sampling: hyperlogger.SamplingConfig{
+			Enabled:    true,
+			Initial:    1,
+			Thereafter: 2,
+		},
+	}
+
+	loggerInstance, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	loggerInstance.Info("first")
+	loggerInstance.Info("second")
+	loggerInstance.Info("third")
+	loggerInstance.Warn("always logged")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 logged lines (first, third, warn), got %d: %v", len(lines), lines)
+	}
+
+	if !strings.Contains(lines[0], "first") || !strings.Contains(lines[1], "third") {
+		t.Fatalf("unexpected sampling behaviour: %v", lines)
+	}
+
+	if !strings.Contains(lines[2], "always logged") {
+		t.Fatalf("warn level should bypass sampling: %v", lines[2])
+	}
+}
+
+func TestAdapter_GlobalHooks(t *testing.T) {
+	defer hyperlogger.UnregisterAllHooks()
+	hyperlogger.UnregisterAllHooks()
+
+	var called atomic.Bool
+
+	hyperlogger.RegisterHook(hyperlogger.InfoLevel, func(ctx context.Context, entry *hyperlogger.Entry) error {
+		called.Store(true)
+		if ctx == nil {
+			t.Fatalf("expected context to be forwarded to hook")
+		}
+
+		return nil
+	})
+
+	buf := &bytes.Buffer{}
+	loggerInstance, err := NewAdapter(context.Background(), hyperlogger.Config{
+		Output: buf,
+		Level:  hyperlogger.InfoLevel,
+	})
+	require.NoError(t, err)
+
+	loggerInstance.Info("hooked")
+
+	if !called.Load() {
+		t.Fatalf("expected global hook to be triggered")
+	}
+}
+
+func TestAdapter_FileOutputConfiguration(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "app.log")
+	buffer := &bytes.Buffer{}
+
+	cfg := hyperlogger.Config{
+		Output:      buffer,
+		Level:       hyperlogger.InfoLevel,
+		EnableAsync: false,
+		File: hyperlogger.FileConfig{
+			Path: logPath,
+		},
+	}
+
+	loggerInstance, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	loggerInstance.Info("file-test-entry")
+	require.NoError(t, loggerInstance.Sync())
+
+	contents, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(contents), "file-test-entry")
+	assert.Contains(t, buffer.String(), "file-test-entry")
+}
+
+func TestAdapter_LevelConcurrency(t *testing.T) {
+	t.Parallel()
+
+	buf := &bytes.Buffer{}
+	cfg := hyperlogger.Config{
+		Output: buf,
+		Level:  hyperlogger.InfoLevel,
+	}
+
+	loggerInstance, err := NewAdapter(context.Background(), cfg)
+	require.NoError(t, err)
+
+	const goroutines = 8
+	const iterations = 500
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+
+			for j := 0; j < iterations; j++ {
+				level := hyperlogger.Level(j % int(hyperlogger.FatalLevel+1))
+				loggerInstance.SetLevel(level)
+				_ = loggerInstance.GetLevel()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	finalLevel := loggerInstance.GetLevel()
+	assert.True(t, finalLevel.IsValid())
+}
+
 func TestAdapter_Sync(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -800,6 +1056,53 @@ func TestWithContext_ContextValues(t *testing.T) {
 	output := buf.String()
 	assert.Contains(t, output, "namespace")
 	assert.Contains(t, output, "test-namespace")
+}
+
+func TestExtractContextKeys(t *testing.T) {
+	t.Run("nil context returns extras unchanged", func(t *testing.T) {
+		initial := []hyperlogger.Field{{Key: "existing", Value: "value"}}
+		result := extractContextKeys(context.Background(), initial)
+		assert.Equal(t, initial, result)
+	})
+
+	t.Run("context with known keys adds fields", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), constants.TraceKey{}, "trace-123")
+		ctx = context.WithValue(ctx, constants.RequestKey{}, "req-456")
+
+		result := extractContextKeys(ctx, nil)
+		require.Len(t, result, 2)
+
+		values := make(map[string]any, len(result))
+		for _, field := range result {
+			values[field.Key] = field.Value
+		}
+
+		assert.Equal(t, "trace-123", values["trace_id"])
+	})
+
+	t.Run("non-string values are ignored", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), constants.TraceKey{}, 12345)
+
+		result := extractContextKeys(ctx, nil)
+		assert.Empty(t, result)
+	})
+
+	t.Run("fields appended to existing extras", func(t *testing.T) {
+		extras := []hyperlogger.Field{{Key: "base", Value: "value"}}
+		ctx := context.WithValue(context.Background(), constants.NamespaceKey{}, "ns-789")
+		ctx = context.WithValue(ctx, constants.RequestKey{}, "req-456")
+
+		result := extractContextKeys(ctx, extras)
+		require.Len(t, result, 2+len(extras))
+
+		values := make(map[string]any, len(result))
+		for _, field := range result {
+			values[field.Key] = field.Value
+		}
+
+		assert.Equal(t, "value", values["base"])
+		assert.Equal(t, "ns-789", values["namespace"])
+	})
 }
 
 func BenchmarkAdapterLogging(b *testing.B) {

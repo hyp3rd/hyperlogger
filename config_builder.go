@@ -17,11 +17,12 @@ type ConfigBuilder struct {
 func NewConfigBuilder() *ConfigBuilder {
 	return &ConfigBuilder{
 		config: Config{
-			Output:          os.Stdout,
-			Level:           InfoLevel,
-			TimeFormat:      time.RFC3339,
-			EnableCaller:    true,
-			AsyncBufferSize: DefaultAsyncBufferSize,
+			Output:                os.Stdout,
+			Level:                 InfoLevel,
+			TimeFormat:            time.RFC3339,
+			EnableCaller:          true,
+			AsyncBufferSize:       DefaultAsyncBufferSize,
+			AsyncOverflowStrategy: AsyncOverflowDropNewest,
 			Color: ColorConfig{
 				Enable:   true,
 				ForceTTY: false,
@@ -46,6 +47,7 @@ func NewConfigBuilder() *ConfigBuilder {
 				FileMode:         LogFilePermissions,
 				CompressionLevel: -1, // Default compression level
 			},
+			ContextExtractors: make([]ContextExtractor, 0),
 		},
 	}
 }
@@ -72,7 +74,6 @@ func (b *ConfigBuilder) WithConsoleOutput() *ConfigBuilder {
 func (b *ConfigBuilder) WithFileOutput(path string) *ConfigBuilder {
 	// The actual file writer will be created when Build() is called
 	// For now, just store the path
-	b.config.FilePath = path
 	b.config.File.Path = path
 
 	return b
@@ -159,6 +160,38 @@ func (b *ConfigBuilder) WithAsyncBufferSize(size int) *ConfigBuilder {
 	return b
 }
 
+// WithAsyncOverflowStrategy sets the behaviour when the async buffer is full.
+func (b *ConfigBuilder) WithAsyncOverflowStrategy(strategy AsyncOverflowStrategy) *ConfigBuilder {
+	b.config.AsyncOverflowStrategy = strategy
+
+	return b
+}
+
+// WithAsyncDropHandler sets the handler invoked when async logging drops an entry.
+func (b *ConfigBuilder) WithAsyncDropHandler(handler func([]byte)) *ConfigBuilder {
+	b.config.AsyncDropHandler = handler
+
+	return b
+}
+
+// WithContextExtractor appends a context extractor used to enrich log fields.
+func (b *ConfigBuilder) WithContextExtractor(extractor ContextExtractor) *ConfigBuilder {
+	if extractor != nil {
+		b.config.ContextExtractors = append(b.config.ContextExtractors, extractor)
+	}
+
+	return b
+}
+
+// WithContextExtractors appends multiple context extractors.
+func (b *ConfigBuilder) WithContextExtractors(extractors ...ContextExtractor) *ConfigBuilder {
+	for _, extractor := range extractors {
+		b.WithContextExtractor(extractor)
+	}
+
+	return b
+}
+
 // WithField adds a field to the log entries.
 // Example: builder.WithField("version", "1.0.0").
 func (b *ConfigBuilder) WithField(key string, value any) *ConfigBuilder {
@@ -181,8 +214,6 @@ func (b *ConfigBuilder) WithFields(fields []Field) *ConfigBuilder {
 // WithFileRotation configures log file rotation.
 // Example: builder.WithFileRotation(100*1024*1024, true).
 func (b *ConfigBuilder) WithFileRotation(maxSizeBytes int64, compress bool) *ConfigBuilder {
-	b.config.FileMaxSize = maxSizeBytes
-	b.config.FileCompress = compress
 	b.config.File.MaxSizeBytes = maxSizeBytes
 	b.config.File.Compress = compress
 
