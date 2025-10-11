@@ -56,11 +56,28 @@ const (
 	asciiControlEnd   = 126 // End of ASCII printable characters (~)
 )
 
-// ErrNoFilePathSet indicates that the file path is not set for file output.
-var ErrNoFilePathSet = ewrap.New("file path not set for file output")
+var (
+	// ErrNoFilePathSet indicates that the file path is not set for file output.
+	ErrNoFilePathSet = ewrap.New("file path not set for file output")
+	// ErrEncoderNotFound indicates that a requested encoder could not be resolved.
+	ErrEncoderNotFound = ewrap.New("encoder not found")
+)
 
-// ErrEncoderNotFound indicates that a requested encoder could not be resolved.
-var ErrEncoderNotFound = ewrap.New("encoder not found")
+//nolint:gochecknoglobals
+var contextKeyPairs = []struct {
+	field string
+	key   any
+}{
+	{field: "namespace", key: constants.NamespaceKey{}},
+	{field: "service", key: constants.ServiceKey{}},
+	{field: "environment", key: constants.EnvironmentKey{}},
+	{field: "application", key: constants.ApplicationKey{}},
+	{field: "component", key: constants.ComponentKey{}},
+	{field: "request", key: constants.RequestKey{}},
+	{field: "user", key: constants.UserKey{}},
+	{field: "session_id", key: constants.SessionKey{}},
+	{field: "trace_id", key: constants.TraceKey{}},
+}
 
 // bufferPoolBucket represents a size category for buffer pooling.
 type bufferPoolBucket struct {
@@ -145,7 +162,7 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 		level:        new(atomic.Uint32),
 		hookRegistry: hyperlogger.NewHookRegistry(),
 		fields:       cloneFields(config.AdditionalFields),
-		ctx:          ctx,
+		ctx:          normalizeContext(ctx),
 		encoder:      enc,
 	}
 
@@ -267,6 +284,8 @@ func (a *Adapter) Fatalf(format string, args ...any) {
 
 // WithContext returns a new logger with the given context.
 func (a *Adapter) WithContext(ctx context.Context) hyperlogger.Logger {
+	ctx = normalizeContext(ctx)
+
 	// Create a new adapter with the same config but with the given context
 	newAdapter := &Adapter{
 		config:       a.config,
@@ -658,13 +677,22 @@ func formatCallerInfo(file string, line int, funcName string, shortPath bool) st
 	return fmt.Sprintf("%s:%d %s", file, line, funcName)
 }
 
+func normalizeContext(ctx context.Context) context.Context {
+	switch ctx {
+	case nil, context.Background(), context.TODO():
+		return context.Background()
+	default:
+		return ctx
+	}
+}
+
 // withContext adds context values to the fields.
 func withContext(ctx context.Context, fields []hyperlogger.Field, cfg *hyperlogger.Config) []hyperlogger.Field {
 	if ctx == nil {
 		return fields
 	}
 
-	extras := make([]hyperlogger.Field, 0, len(constants.ContextKeyMap()))
+	var extras []hyperlogger.Field
 
 	extras = extractContextKeys(ctx, extras)
 
@@ -693,9 +721,9 @@ func extractContextKeys(ctx context.Context, extras []hyperlogger.Field) []hyper
 		return extras
 	}
 
-	for key, val := range constants.ContextKeyMap() {
-		if v, ok := ctx.Value(val).(string); ok && v != "" {
-			extras = append(extras, hyperlogger.Field{Key: key, Value: v})
+	for _, pair := range contextKeyPairs {
+		if v, ok := ctx.Value(pair.key).(string); ok && v != "" {
+			extras = append(extras, hyperlogger.Field{Key: pair.field, Value: v})
 		}
 	}
 
@@ -1088,12 +1116,7 @@ func (a *Adapter) encodeEntry(entry *hyperlogger.Entry) ([]byte, *bytes.Buffer, 
 
 	size := a.encoder.EstimateSize(entry)
 	if size <= 0 {
-		format := "console"
-		if a.config != nil && a.config.EnableJSON {
-			format = "json"
-		}
-
-		size = predictBufferSize(format, len(entry.Message), len(entry.Fields))
+		size = predictBufferSize(a.config != nil && a.config.EnableJSON, len(entry.Message), len(entry.Fields))
 	}
 
 	buf := a.getBuffer(size)
@@ -1218,10 +1241,10 @@ func (a *Adapter) logHookError(err error) {
 }
 
 // predictBufferSize calculates a more accurate buffer size based on content.
-func predictBufferSize(format string, msgLen int, fieldsLen int) int {
+func predictBufferSize(isJSON bool, msgLen int, fieldsLen int) int {
 	var baseSize, fieldMultiplier int
 
-	if format == "json" {
+	if isJSON {
 		baseSize = jsonBaseSize
 		fieldMultiplier = fieldOverhead
 	} else {

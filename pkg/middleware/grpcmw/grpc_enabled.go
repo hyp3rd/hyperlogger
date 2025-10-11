@@ -18,11 +18,11 @@ func actualOptions(opts ...Option) options {
 	}
 
 	if cfg.traceKey == "" {
-		cfg.traceKey = "x-trace-id"
+		cfg.traceKey = constants.TraceHeader
 	}
 
 	if cfg.requestKey == "" {
-		cfg.requestKey = "x-request-id"
+		cfg.requestKey = constants.RequestHeader
 	}
 
 	return cfg

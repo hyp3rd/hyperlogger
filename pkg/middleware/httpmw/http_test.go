@@ -40,8 +40,8 @@ func TestContextMiddlewareHeaders(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Trace-ID", "trace")
-	req.Header.Set("X-Request-ID", "req")
+	req.Header.Set(constants.TraceHeader, "trace")
+	req.Header.Set(constants.RequestHeader, "req")
 
 	handler.ServeHTTP(rr, req)
 }

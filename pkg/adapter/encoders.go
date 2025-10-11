@@ -36,7 +36,7 @@ func (*consoleEncoder) EstimateSize(entry *hyperlogger.Entry) int {
 		return 0
 	}
 
-	return predictBufferSize("console", len(entry.Message), len(entry.Fields))
+	return predictBufferSize(false, len(entry.Message), len(entry.Fields))
 }
 
 type jsonEncoder struct{}
@@ -62,7 +62,7 @@ func (*jsonEncoder) EstimateSize(entry *hyperlogger.Entry) int {
 		return 0
 	}
 
-	return predictBufferSize("json", len(entry.Message), len(entry.Fields))
+	return predictBufferSize(true, len(entry.Message), len(entry.Fields))
 }
 
 func newEncoderRegistryWithDefaults() (*hyperlogger.EncoderRegistry, error) {

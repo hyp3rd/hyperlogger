@@ -58,8 +58,8 @@ func WithGenerateMissingIDs(enable bool) Option {
 // ContextMiddleware enriches the request context with identifiers commonly used by the logger.
 func ContextMiddleware(opts ...Option) func(http.Handler) http.Handler {
 	cfg := options{
-		traceHeader:    "X-Trace-ID",
-		requestHeader:  "X-Request-ID",
+		traceHeader:    constants.TraceHeader,
+		requestHeader:  constants.RequestHeader,
 		idGenerator:    randomID,
 		generateIfMiss: true,
 	}

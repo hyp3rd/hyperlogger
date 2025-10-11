@@ -1055,7 +1055,7 @@ func TestPredictBufferSize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			size := predictBufferSize(tt.format, tt.msgLen, tt.fieldsLen)
+			size := predictBufferSize(tt.format == "json", tt.msgLen, tt.fieldsLen)
 			assert.GreaterOrEqual(t, size, tt.expectMin)
 		})
 	}
