@@ -524,40 +524,22 @@ func (mw *MultiWriter) Sync() error {
 	mw.mu.RLock()
 	defer mw.mu.RUnlock()
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Starting sync operation for %d writers\n", len(mw.Writers))
-
 	var syncErrors []string
 
-	successCount := 0
-
-	for i, writer := range mw.Writers {
-		if writer == nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: Writer %d is nil, skipping\n", i)
-
+	for _, writer := range mw.Writers {
+		if writer == nil || shouldBypassSync(writer) {
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "DEBUG: Syncing writer %d (%T)\n", i, writer)
-
 		err := writer.Sync()
 		if err != nil {
-			msg := fmt.Sprintf("%T: %v", writer, err)
-			fmt.Fprintf(os.Stderr, "DEBUG: Sync failed: %s\n", msg)
-			syncErrors = append(syncErrors, msg)
-		} else {
-			fmt.Fprintf(os.Stderr, "DEBUG: Sync succeeded for writer %d\n", i)
-
-			successCount++
+			syncErrors = append(syncErrors, fmt.Sprintf("%T: %v", writer, err))
 		}
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Sync complete. Successes: %d, Failures: %d\n",
-		successCount, len(syncErrors))
 
 	if len(syncErrors) > 0 {
 		return ewrap.New("sync operation partially failed").
 			WithMetadata("failed_syncs", syncErrors).
-			WithMetadata("successful_syncs", successCount).
 			WithMetadata("total_writers", len(mw.Writers))
 	}
 
@@ -572,35 +554,18 @@ func (mw *MultiWriter) Close() error {
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Starting close operation for %d writers\n", len(mw.Writers))
-
 	var closeErrors []string
 
-	successCount := 0
-
-	for i, writer := range mw.Writers {
-		if writer == nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: Writer %d is nil, skipping\n", i)
-
+	for _, writer := range mw.Writers {
+		if writer == nil || shouldBypassClose(writer) {
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "DEBUG: Closing writer %d (%T)\n", i, writer)
-
 		err := writer.Close()
-		if err != nil { // Simplified error check
-			msg := fmt.Sprintf("%T: %v", writer, err)
-			fmt.Fprintf(os.Stderr, "DEBUG: Close failed: %s\n", msg)
-			closeErrors = append(closeErrors, msg)
-		} else {
-			fmt.Fprintf(os.Stderr, "DEBUG: Close succeeded for writer %d\n", i)
-
-			successCount++
+		if err != nil {
+			closeErrors = append(closeErrors, fmt.Sprintf("%T: %v", writer, err))
 		}
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Close complete. Successes: %d, Failures: %d\n",
-		successCount, len(closeErrors))
 
 	// Clear writers slice
 	for i := range mw.Writers {
@@ -612,7 +577,7 @@ func (mw *MultiWriter) Close() error {
 	if len(closeErrors) > 0 {
 		return ewrap.New("close operation partially failed").
 			WithMetadata("failed_closes", closeErrors).
-			WithMetadata("successful_closes", successCount)
+			WithMetadata("total_writers", len(closeErrors))
 	}
 
 	return nil
@@ -707,6 +672,36 @@ func (mw *MultiWriter) writeToEachWriter(
 	}
 
 	return failedWrites, incompleteWrites, successCount
+}
+
+func shouldBypassSync(writer Writer) bool {
+	switch w := writer.(type) {
+	case *os.File:
+		return isStandardStream(w)
+	case *writerAdapter:
+		if f, ok := w.writer.(*os.File); ok {
+			return isStandardStream(f)
+		}
+	}
+
+	return false
+}
+
+func shouldBypassClose(writer Writer) bool {
+	switch w := writer.(type) {
+	case *os.File:
+		return isStandardStream(w)
+	case *writerAdapter:
+		if f, ok := w.writer.(*os.File); ok {
+			return isStandardStream(f)
+		}
+	}
+
+	return false
+}
+
+func isStandardStream(f *os.File) bool {
+	return f == os.Stdout || f == os.Stderr
 }
 
 // getWriterName returns a descriptive name for a writer.
