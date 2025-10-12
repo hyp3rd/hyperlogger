@@ -3,6 +3,7 @@ package output
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -291,11 +292,14 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 	writer := newMockWriter()
 	writer.writeDelay = 100 * time.Millisecond
 
-	var reported AsyncMetrics
+	var reported atomic.Pointer[AsyncMetrics]
 	async := NewAsyncWriter(writer, AsyncConfig{
 		BufferSize:       1,
 		OverflowStrategy: AsyncOverflowDropNewest,
-		MetricsReporter:  func(m AsyncMetrics) { reported = m },
+		MetricsReporter: func(m AsyncMetrics) {
+			snapshot := m
+			reported.Store(&snapshot)
+		},
 	})
 	defer async.Close()
 
@@ -316,7 +320,7 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 		t.Fatalf("expected dropped entries to be tracked")
 	}
 
-	if reported.Dropped == 0 {
+	if latest := reported.Load(); latest == nil || latest.Dropped == 0 {
 		t.Fatalf("expected metrics reporter to receive updates")
 	}
 }

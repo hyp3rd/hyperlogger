@@ -47,6 +47,7 @@ type AsyncWriter struct {
 	wg         sync.WaitGroup
 	closed     bool
 	closeMutex sync.Mutex
+	metricsMu  sync.Mutex
 
 	enqueuedCount  atomic.Uint64
 	processedCount atomic.Uint64
@@ -252,9 +253,15 @@ func (w *AsyncWriter) Metrics() AsyncMetrics {
 }
 
 func (w *AsyncWriter) reportMetrics() {
-	if w.config.MetricsReporter != nil {
-		w.config.MetricsReporter(w.Metrics())
+	reporter := w.config.MetricsReporter
+	if reporter == nil {
+		return
 	}
+
+	w.metricsMu.Lock()
+	defer w.metricsMu.Unlock()
+
+	reporter(w.Metrics())
 }
 
 // start begins the background writing goroutine.

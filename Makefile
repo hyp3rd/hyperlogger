@@ -4,8 +4,11 @@ GOFILES = $(shell find . -type f -name '*.go' -not -path "./pkg/api/*" -not -pat
 
 BUF_VERSION = v1.58.0
 
-test:
+test: test-race
 	RUN_INTEGRATION_TEST=yes go test -v -timeout 1m -cover ./...
+
+test-race:
+	go test -race ./...
 
 bench:
 	go test -bench=. -benchtime=3s -benchmem -run=^-memprofile=mem.out ./...
