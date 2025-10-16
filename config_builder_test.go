@@ -289,6 +289,14 @@ func TestWithFileRotation(t *testing.T) {
 	if config.File.Compress != compress {
 		t.Error("WithFileRotation did not set File.Compress correctly")
 	}
+
+	if config.FileMaxSize != maxSize {
+		t.Error("WithFileRotation did not set FileMaxSize correctly")
+	}
+
+	if config.FileCompress != compress {
+		t.Error("WithFileRotation did not set FileCompress correctly")
+	}
 }
 
 func TestWithSampling(t *testing.T) {

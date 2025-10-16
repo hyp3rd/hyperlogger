@@ -519,6 +519,9 @@ func buildFileWriter(config *hyperlogger.Config) (output.Writer, error) {
 	config.File.Path = path
 	config.File.MaxSizeBytes = fileCfg.MaxSize
 	config.File.Compress = fileCfg.Compress
+	config.FilePath = path
+	config.FileMaxSize = fileCfg.MaxSize
+	config.FileCompress = fileCfg.Compress
 
 	return writer, nil
 }

@@ -138,6 +138,12 @@ type Config struct {
 	Sampling SamplingConfig
 	// File configures file output settings when using file output.
 	File FileConfig
+	// FilePath is a convenience field for simple file output configuration.
+	FilePath string
+	// FileMaxSize is a convenience field for simple rotation configuration (in bytes).
+	FileMaxSize int64
+	// FileCompress is a convenience field for simple compression configuration.
+	FileCompress bool
 	// Hooks contains hooks to be called during logging.
 	Hooks []HookConfig
 	// ContextExtractors apply additional enrichment from context values.
@@ -172,6 +178,9 @@ func DefaultConfig() Config {
 			FileMode:         LogFilePermissions,
 			CompressionLevel: -1, // Default compression level
 		},
+		FilePath:          "",
+		FileMaxSize:       0,
+		FileCompress:      false,
 		EncoderRegistry:   nil,
 		Hooks:             make([]HookConfig, 0),
 		ContextExtractors: nil,

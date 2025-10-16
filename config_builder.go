@@ -75,6 +75,7 @@ func (b *ConfigBuilder) WithFileOutput(path string) *ConfigBuilder {
 	// The actual file writer will be created when Build() is called
 	// For now, just store the path
 	b.config.File.Path = path
+	b.config.FilePath = path
 
 	return b
 }
@@ -237,6 +238,9 @@ func (b *ConfigBuilder) WithFields(fields []Field) *ConfigBuilder {
 func (b *ConfigBuilder) WithFileRotation(maxSizeBytes int64, compress bool) *ConfigBuilder {
 	b.config.File.MaxSizeBytes = maxSizeBytes
 	b.config.File.Compress = compress
+
+	b.config.FileMaxSize = maxSizeBytes
+	b.config.FileCompress = compress
 
 	return b
 }

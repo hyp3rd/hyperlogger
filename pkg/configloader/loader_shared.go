@@ -50,14 +50,17 @@ func applyRaw(raw rawConfig) (*hyperlogger.Config, error) {
 
 	if raw.File.Path != "" {
 		cfg.File.Path = raw.File.Path
+		cfg.FilePath = raw.File.Path
 	}
 
 	if raw.File.MaxSize != nil {
 		cfg.File.MaxSizeBytes = *raw.File.MaxSize
+		cfg.FileMaxSize = *raw.File.MaxSize
 	}
 
 	if raw.File.Compress != nil {
 		cfg.File.Compress = *raw.File.Compress
+		cfg.FileCompress = *raw.File.Compress
 	}
 
 	if raw.Output != "" {
