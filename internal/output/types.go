@@ -26,6 +26,10 @@ func NewWriterAdapter(w io.Writer) Writer {
 	return &writerAdapter{writer: w}
 }
 
+func (w *writerAdapter) Underlying() io.Writer {
+	return w.writer
+}
+
 func (w *writerAdapter) Write(p []byte) (int, error) {
 	bytes, err := w.writer.Write(p)
 	if err != nil {

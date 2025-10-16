@@ -90,6 +90,7 @@
         "tagalign",
         "toplevel",
         "Tracef",
+        "uppercasing",
         "varnamelen",
         "vettool",
         "Warnf",

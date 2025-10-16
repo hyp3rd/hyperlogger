@@ -11,26 +11,9 @@ import (
 	"github.com/hyp3rd/hyperlogger/internal/constants"
 )
 
-func actualOptions(opts ...Option) options {
-	cfg := options{}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-
-	if cfg.traceKey == "" {
-		cfg.traceKey = constants.TraceHeader
-	}
-
-	if cfg.requestKey == "" {
-		cfg.requestKey = constants.RequestHeader
-	}
-
-	return cfg
-}
-
 // UnaryServerInterceptor enriches the gRPC context with metadata values.
 func UnaryServerInterceptor(opts ...Option) grpc.UnaryServerInterceptor {
-	cfg := actualOptions(opts...)
+	cfg := applyOptions(opts...)
 
 	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if md, ok := metadata.FromIncomingContext(ctx); ok {

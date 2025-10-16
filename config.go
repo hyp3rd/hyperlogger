@@ -4,10 +4,13 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/hyp3rd/ewrap"
+
+	"github.com/hyp3rd/hyperlogger/internal/utils"
 )
 
 const (
@@ -225,10 +228,24 @@ func SetOutput(output string) (io.Writer, error) {
 	case "stderr":
 		return os.Stderr, nil
 	default:
-		//nolint:gosec // G304: Potential file inclusion via variable: the path is already validated by SecurePath
-		file, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, LogFilePermissions)
+		path := filepath.Clean(output)
+
+		if path == "" {
+			return nil, ewrap.New("output path cannot be empty")
+		}
+
+		if !filepath.IsAbs(path) {
+			securePath, err := utils.SecurePath(path)
+			if err != nil {
+				return nil, ewrap.Wrap(err, "invalid output path")
+			}
+
+			path = securePath
+		}
+
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, LogFilePermissions)
 		if err != nil {
-			return nil, ewrap.Wrapf(err, "failed to open log file %s", output)
+			return nil, ewrap.Wrapf(err, "failed to open log file %s", path)
 		}
 
 		return file, nil

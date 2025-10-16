@@ -3,9 +3,12 @@ package output
 import (
 	"io"
 	"math"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hyp3rd/ewrap"
 
 	"github.com/hyp3rd/hyperlogger/internal/constants"
 )
@@ -130,6 +133,11 @@ func NewAsyncWriter(out io.Writer, config AsyncConfig) *AsyncWriter {
 	return aw
 }
 
+// Underlying returns the writer wrapped by the AsyncWriter.
+func (w *AsyncWriter) Underlying() io.Writer {
+	return w.out
+}
+
 // Write implements the io.Writer interface for asynchronous writing.
 func (w *AsyncWriter) Write(data []byte) (int, error) {
 	w.closeMutex.Lock()
@@ -213,7 +221,7 @@ func (w *AsyncWriter) Flush() error {
 	// Wait for flush to complete or timeout
 	select {
 	case <-doneCh:
-		return nil
+		return w.syncUnderlying()
 	case <-time.After(w.config.WaitTimeout):
 		return ErrFlushTimeout
 	}
@@ -237,7 +245,12 @@ func (w *AsyncWriter) Close() error {
 	// Wait for the goroutine to finish processing remaining messages
 	w.wg.Wait()
 
-	return nil
+	err := w.syncUnderlying()
+	if err != nil {
+		return err
+	}
+
+	return w.closeUnderlying()
 }
 
 // Metrics returns a snapshot of the current metrics counters.
@@ -262,6 +275,32 @@ func (w *AsyncWriter) reportMetrics() {
 	defer w.metricsMu.Unlock()
 
 	reporter(w.Metrics())
+}
+
+func (w *AsyncWriter) syncUnderlying() error {
+	if syncer, ok := w.out.(interface{ Sync() error }); ok {
+		err := syncer.Sync()
+		if err != nil {
+			return ewrap.Wrap(err, "syncing underlying writer")
+		}
+	}
+
+	return nil
+}
+
+func (w *AsyncWriter) closeUnderlying() error {
+	if closer, ok := w.out.(io.Closer); ok {
+		if f, ok := closer.(*os.File); ok && isStandardStream(f) {
+			return nil
+		}
+
+		err := closer.Close()
+		if err != nil {
+			return ewrap.Wrap(err, "closing underlying writer")
+		}
+	}
+
+	return nil
 }
 
 // start begins the background writing goroutine.

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/hyp3rd/ewrap"
+	"github.com/mattn/go-isatty"
 
 	"github.com/hyp3rd/hyperlogger"
 	"github.com/hyp3rd/hyperlogger/internal/constants"
@@ -375,11 +376,56 @@ func validateConfig(config *hyperlogger.Config) error {
 		return ewrap.New("output writer is required")
 	}
 
+	enforceColorPolicy(config)
+
 	if !config.AsyncOverflowStrategy.IsValid() {
 		config.AsyncOverflowStrategy = hyperlogger.AsyncOverflowDropNewest
 	}
 
 	return nil
+}
+
+func enforceColorPolicy(config *hyperlogger.Config) {
+	if config == nil {
+		return
+	}
+
+	if !config.Color.Enable || config.Color.ForceTTY {
+		return
+	}
+
+	if hasTTY(config.Output) {
+		return
+	}
+
+	config.Color.Enable = false
+}
+
+func hasTTY(writer io.Writer) bool {
+	if writer == nil {
+		return false
+	}
+
+	switch typedWriter := writer.(type) {
+	case *output.MultiWriter:
+		for _, inner := range typedWriter.Writers {
+			if hasTTY(inner) {
+				return true
+			}
+		}
+
+		return false
+	case interface{ Underlying() io.Writer }:
+		return hasTTY(typedWriter.Underlying())
+	case *output.ConsoleWriter:
+		return true
+	case interface{ Fd() uintptr }:
+		fd := typedWriter.Fd()
+
+		return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+	default:
+		return false
+	}
 }
 
 // cloneFields creates a shallow copy of a slice of fields to prevent shared state mutation.

@@ -1,14 +1,15 @@
 package hyperlogger
 
 import (
-	"errors"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/hyp3rd/ewrap"
 )
 
 func TestFieldHelpers(t *testing.T) {
-	errExample := errors.New("boom")
+	errExample := ewrap.New("boom")
 	now := time.Now()
 
 	tests := []struct {

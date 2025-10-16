@@ -47,7 +47,7 @@ func (m *mockWriter) Write(p []byte) (int, error) {
 	if failures > 0 {
 		err := transientErr
 		if err == nil {
-			err = errors.New("transient error")
+			err = ewrap.New("transient error")
 		}
 
 		return 0, err
@@ -327,7 +327,7 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 
 func TestAsyncWriter_Retry(t *testing.T) {
 	writer := newMockWriter()
-	writer.transientError = errors.New("temporary")
+	writer.transientError = ewrap.New("temporary")
 	writer.failuresBeforeSuccess = 2
 
 	async := NewAsyncWriter(writer, AsyncConfig{
