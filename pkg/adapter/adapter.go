@@ -1249,7 +1249,7 @@ func (a *Adapter) processHooks(entry *hyperlogger.Entry) {
 	var hookErrs []error
 
 	if a.hookRegistry != nil {
-		hookErrs = append(hookErrs, a.hookRegistry.FireHooks(entry)...)
+		hookErrs = append(hookErrs, a.hookRegistry.Dispatch(a.ctx, entry)...)
 	}
 
 	hookErrs = append(hookErrs, hyperlogger.FireRegisteredHooks(a.ctx, entry)...)

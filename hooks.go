@@ -37,16 +37,10 @@ type Hook interface {
 // or integrate with external monitoring systems.
 type LogHookFunc func(ctx context.Context, entry *Entry) error
 
-// hooks maintains a registry of hook functions for each log level.
+// globalHookRegistry stores hook registrations shared across all loggers.
 //
 //nolint:gochecknoglobals
-var hooks = struct {
-	sync.RWMutex
-
-	funcs map[Level][]LogHookFunc
-}{
-	funcs: make(map[Level][]LogHookFunc),
-}
+var globalHookRegistry = NewHookRegistry()
 
 // RegisterHook adds a hook function for the specified log level.
 // All hooks registered at a given level will be executed in registration order
@@ -58,55 +52,24 @@ func RegisterHook(level Level, hookFunc LogHookFunc) {
 		return
 	}
 
-	hooks.Lock()
-	defer hooks.Unlock()
-
-	if !level.IsValid() {
-		// If level is invalid, register for all levels
-		for l := TraceLevel; l <= FatalLevel; l++ {
-			if _, exists := hooks.funcs[l]; !exists {
-				hooks.funcs[l] = make([]LogHookFunc, 0, 2)
-			}
-
-			hooks.funcs[l] = append(hooks.funcs[l], hookFunc)
-		}
-
-		return
-	}
-
-	// Register hook for specified level
-	if _, exists := hooks.funcs[level]; !exists {
-		hooks.funcs[level] = make([]LogHookFunc, 0, 2)
-	}
-
-	hooks.funcs[level] = append(hooks.funcs[level], hookFunc)
+	globalHookRegistry.AddFunc(level, hookFunc)
 }
 
 // RegisterGlobalHook adds a hook function for all log levels.
 func RegisterGlobalHook(hookFunc LogHookFunc) {
 	for level := TraceLevel; level <= FatalLevel; level++ {
-		RegisterHook(level, hookFunc)
+		globalHookRegistry.AddFunc(level, hookFunc)
 	}
 }
 
 // UnregisterHooks removes all hooks for the specified level.
 func UnregisterHooks(level Level) {
-	if !level.IsValid() {
-		return
-	}
-
-	hooks.Lock()
-	defer hooks.Unlock()
-
-	delete(hooks.funcs, level)
+	globalHookRegistry.RemoveFuncs(level)
 }
 
 // UnregisterAllHooks removes all hooks for all levels.
 func UnregisterAllHooks() {
-	hooks.Lock()
-	defer hooks.Unlock()
-
-	hooks.funcs = make(map[Level][]LogHookFunc)
+	globalHookRegistry.ResetFuncs()
 }
 
 // LogHook is a container for LogHookFunc with associated metadata.
@@ -122,58 +85,21 @@ type HookRegistry struct {
 	mu sync.RWMutex
 
 	Hooks map[string]Hook
+	funcs map[Level][]LogHookFunc
 }
 
 // NewHookRegistry creates a new hook registry.
 func NewHookRegistry() *HookRegistry {
 	return &HookRegistry{
 		Hooks: make(map[string]Hook),
+		funcs: make(map[Level][]LogHookFunc),
 	}
 }
 
 // FireRegisteredHooks executes the global LogHookFuncs registered via RegisterHook/RegisterGlobalHook
 // and returns any errors they produced.
 func FireRegisteredHooks(ctx context.Context, entry *Entry) []error {
-	if entry == nil {
-		return nil
-	}
-
-	funcs := collectHookFuncs(entry.Level)
-	if len(funcs) == 0 {
-		return nil
-	}
-
-	var errs []error
-
-	for _, fn := range funcs {
-		if fn == nil {
-			continue
-		}
-
-		err := fn(ctx, entry)
-		if err != nil {
-			err = ewrap.Wrap(err, "hook execution failed")
-			errs = append(errs, err)
-		}
-	}
-
-	return errs
-}
-
-func collectHookFuncs(level Level) []LogHookFunc {
-	hooks.RLock()
-	defer hooks.RUnlock()
-
-	if level.IsValid() {
-		return append([]LogHookFunc(nil), hooks.funcs[level]...)
-	}
-
-	var all []LogHookFunc
-	for l := TraceLevel; l <= FatalLevel; l++ {
-		all = append(all, hooks.funcs[l]...)
-	}
-
-	return all
+	return globalHookRegistry.Dispatch(ctx, entry)
 }
 
 // AddHook adds a named hook to the registry.
@@ -188,6 +114,47 @@ func (r *HookRegistry) AddHook(name string, hook Hook) error {
 	r.Hooks[name] = hook
 
 	return nil
+}
+
+// AddFunc registers a LogHookFunc for the specified level.
+// If level is invalid, the hook is registered for all levels.
+func (r *HookRegistry) AddFunc(level Level, hookFunc LogHookFunc) {
+	if hookFunc == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !level.IsValid() {
+		for l := TraceLevel; l <= FatalLevel; l++ {
+			r.funcs[l] = append(r.funcs[l], hookFunc)
+		}
+
+		return
+	}
+
+	r.funcs[level] = append(r.funcs[level], hookFunc)
+}
+
+// RemoveFuncs clears all function hooks for the provided level.
+func (r *HookRegistry) RemoveFuncs(level Level) {
+	if !level.IsValid() {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.funcs, level)
+}
+
+// ResetFuncs removes all registered function hooks.
+func (r *HookRegistry) ResetFuncs() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.funcs = make(map[Level][]LogHookFunc)
 }
 
 // RemoveHook removes a hook by name.
@@ -230,21 +197,36 @@ func (r *HookRegistry) GetHooksForLevel(level Level) []Hook {
 	return result
 }
 
-// FireHooks triggers all hooks for a given log entry
-// It returns any errors encountered during hook execution.
+// FireHooks triggers all hooks for a given log entry using a background context.
+// Deprecated: use Dispatch to control context propagation.
 func (r *HookRegistry) FireHooks(entry *Entry) []error {
-	hooks := r.GetHooksForLevel(entry.Level)
+	return r.Dispatch(context.Background(), entry)
+}
 
-	if len(hooks) == 0 {
+// Dispatch triggers all hooks for a given log entry with context propagation.
+// It returns any errors encountered during hook execution.
+func (r *HookRegistry) Dispatch(ctx context.Context, entry *Entry) []error {
+	if entry == nil {
 		return nil
 	}
 
 	var errors []error
 
-	for _, hook := range hooks {
+	for _, hook := range r.GetHooksForLevel(entry.Level) {
 		err := hook.OnLog(entry)
 		if err != nil {
 			errors = append(errors, err)
+		}
+	}
+
+	for _, fn := range r.getFuncsForLevel(entry.Level) {
+		if fn == nil {
+			continue
+		}
+
+		err := fn(ctx, entry)
+		if err != nil {
+			errors = append(errors, ewrap.Wrap(err, "hook execution failed"))
 		}
 	}
 
@@ -279,4 +261,21 @@ func (h *StandardHook) OnLog(entry *Entry) error {
 // Levels implements Hook.Levels.
 func (h *StandardHook) Levels() []Level {
 	return h.LevelList
+}
+
+func (r *HookRegistry) getFuncsForLevel(level Level) []LogHookFunc {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if level.IsValid() {
+		return append([]LogHookFunc(nil), r.funcs[level]...)
+	}
+
+	var funcs []LogHookFunc
+
+	for l := TraceLevel; l <= FatalLevel; l++ {
+		funcs = append(funcs, r.funcs[l]...)
+	}
+
+	return funcs
 }

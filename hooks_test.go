@@ -45,38 +45,38 @@ func TestRegisterHook(t *testing.T) {
 	// Register for specific level
 	RegisterHook(InfoLevel, testHook)
 
-	hooks.RLock()
+	globalHookRegistry.mu.RLock()
 
-	if len(hooks.funcs[InfoLevel]) != 1 {
-		t.Errorf("Expected hook to be registered for InfoLevel, got %d hooks", len(hooks.funcs[InfoLevel]))
+	if len(globalHookRegistry.funcs[InfoLevel]) != 1 {
+		t.Errorf("Expected hook to be registered for InfoLevel, got %d hooks", len(globalHookRegistry.funcs[InfoLevel]))
 	}
 
-	hooks.RUnlock()
+	globalHookRegistry.mu.RUnlock()
 
 	// Register nil hook (should be ignored)
 	RegisterHook(InfoLevel, nil)
 
-	hooks.RLock()
+	globalHookRegistry.mu.RLock()
 
-	if len(hooks.funcs[InfoLevel]) != 1 {
-		t.Errorf("Expected nil hook to be ignored, got %d hooks", len(hooks.funcs[InfoLevel]))
+	if len(globalHookRegistry.funcs[InfoLevel]) != 1 {
+		t.Errorf("Expected nil hook to be ignored, got %d hooks", len(globalHookRegistry.funcs[InfoLevel]))
 	}
 
-	hooks.RUnlock()
+	globalHookRegistry.mu.RUnlock()
 
 	// Test invalid level (should register for all levels)
 	UnregisterAllHooks()
 	RegisterHook(Level(100), testHook)
 
-	hooks.RLock()
+	globalHookRegistry.mu.RLock()
 
 	for level := TraceLevel; level <= FatalLevel; level++ {
-		if len(hooks.funcs[level]) != 1 {
-			t.Errorf("Expected hook to be registered for level %d, got %d hooks", level, len(hooks.funcs[level]))
+		if len(globalHookRegistry.funcs[level]) != 1 {
+			t.Errorf("Expected hook to be registered for level %d, got %d hooks", level, len(globalHookRegistry.funcs[level]))
 		}
 	}
 
-	hooks.RUnlock()
+	globalHookRegistry.mu.RUnlock()
 }
 
 func TestRegisterGlobalHook(t *testing.T) {
@@ -94,15 +94,15 @@ func TestRegisterGlobalHook(t *testing.T) {
 
 	RegisterGlobalHook(testHook)
 
-	hooks.RLock()
+	globalHookRegistry.mu.RLock()
 
 	for level := TraceLevel; level <= FatalLevel; level++ {
-		if len(hooks.funcs[level]) != 1 {
-			t.Errorf("Expected hook to be registered for level %d, got %d hooks", level, len(hooks.funcs[level]))
+		if len(globalHookRegistry.funcs[level]) != 1 {
+			t.Errorf("Expected hook to be registered for level %d, got %d hooks", level, len(globalHookRegistry.funcs[level]))
 		}
 	}
 
-	hooks.RUnlock()
+	globalHookRegistry.mu.RUnlock()
 }
 
 func TestUnregisterHooks(t *testing.T) {
@@ -121,26 +121,26 @@ func TestUnregisterHooks(t *testing.T) {
 	// Unregister for invalid level (should do nothing)
 	UnregisterHooks(Level(100))
 
-	hooks.RLock()
+	globalHookRegistry.mu.RLock()
 
 	for level := TraceLevel; level <= FatalLevel; level++ {
-		if len(hooks.funcs[level]) != 1 {
+		if len(globalHookRegistry.funcs[level]) != 1 {
 			t.Errorf("Expected hooks to remain for level %d", level)
 		}
 	}
 
-	hooks.RUnlock()
+	globalHookRegistry.mu.RUnlock()
 
 	// Unregister for specific level
 	UnregisterHooks(InfoLevel)
 
-	hooks.RLock()
+	globalHookRegistry.mu.RLock()
 
-	if _, exists := hooks.funcs[InfoLevel]; exists {
+	if _, exists := globalHookRegistry.funcs[InfoLevel]; exists {
 		t.Errorf("Expected hooks to be unregistered for InfoLevel")
 	}
 
-	hooks.RUnlock()
+	globalHookRegistry.mu.RUnlock()
 }
 
 func TestUnregisterAllHooks(t *testing.T) {
@@ -152,19 +152,19 @@ func TestUnregisterAllHooks(t *testing.T) {
 	// Unregister all hooks
 	UnregisterAllHooks()
 
-	hooks.RLock()
+	globalHookRegistry.mu.RLock()
 
-	if len(hooks.funcs) != 0 {
-		t.Errorf("Expected all hooks to be unregistered, got %d", len(hooks.funcs))
+	if len(globalHookRegistry.funcs) != 0 {
+		t.Errorf("Expected all hooks to be unregistered, got %d", len(globalHookRegistry.funcs))
 	}
 
-	hooks.RUnlock()
+	globalHookRegistry.mu.RUnlock()
 }
 
 func TestHookRegistry(t *testing.T) {
 	t.Run("NewHookRegistry", func(t *testing.T) {
 		registry := NewHookRegistry()
-		if registry == nil || registry.Hooks == nil {
+		if registry == nil || registry.Hooks == nil || registry.funcs == nil {
 			t.Fatal("Expected non-nil registry and hooks map")
 		}
 	})
@@ -273,7 +273,7 @@ func TestHookRegistry(t *testing.T) {
 
 		entry := &Entry{Level: InfoLevel, Message: "test"}
 
-		errors := registry.FireHooks(entry)
+		errors := registry.Dispatch(context.Background(), entry)
 
 		if len(errors) != 1 {
 			t.Errorf("Expected 1 error, got %d", len(errors))
@@ -286,9 +286,42 @@ func TestHookRegistry(t *testing.T) {
 		// Test with no matching hooks
 		noMatchEntry := &Entry{Level: ErrorLevel, Message: "test"}
 
-		errors = registry.FireHooks(noMatchEntry)
+		errors = registry.Dispatch(context.Background(), noMatchEntry)
 		if len(errors) != 0 {
 			t.Errorf("Expected 0 errors for non-matching level, got %d", len(errors))
+		}
+	})
+
+	t.Run("AddFunc", func(t *testing.T) {
+		registry := NewHookRegistry()
+
+		callCount := 0
+		registry.AddFunc(InfoLevel, func(ctx context.Context, entry *Entry) error {
+			callCount++
+			if ctx == nil {
+				t.Fatal("expected context to be propagated")
+			}
+
+			return nil
+		})
+
+		errs := registry.Dispatch(context.Background(), &Entry{Level: InfoLevel})
+		if len(errs) != 0 {
+			t.Fatalf("expected no errors, got %d", len(errs))
+		}
+
+		if callCount != 1 {
+			t.Fatalf("expected function hook to run once, got %d", callCount)
+		}
+
+		registry.RemoveFuncs(InfoLevel)
+		errs = registry.Dispatch(context.Background(), &Entry{Level: InfoLevel})
+		if len(errs) != 0 {
+			t.Fatalf("expected no errors after removal, got %d", len(errs))
+		}
+
+		if callCount != 1 {
+			t.Fatalf("expected function hook not to be invoked after removal, got %d", callCount)
 		}
 	})
 }
