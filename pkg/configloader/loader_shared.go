@@ -206,10 +206,17 @@ type rawColorConfig struct {
 }
 
 type rawSamplingConfig struct {
-	Enabled           *bool `mapstructure:"enabled"`
-	Initial           *int  `mapstructure:"initial"`
-	Thereafter        *int  `mapstructure:"thereafter"`
-	PerLevelThreshold *bool `mapstructure:"per_level_threshold"`
+	Enabled           *bool                      `mapstructure:"enabled"`
+	Initial           *int                       `mapstructure:"initial"`
+	Thereafter        *int                       `mapstructure:"thereafter"`
+	PerLevelThreshold *bool                      `mapstructure:"per_level_threshold"`
+	Rules             map[string]rawSamplingRule `mapstructure:"rules"`
+}
+
+type rawSamplingRule struct {
+	Enabled    *bool `mapstructure:"enabled"`
+	Initial    *int  `mapstructure:"initial"`
+	Thereafter *int  `mapstructure:"thereafter"`
 }
 
 type rawFileConfig struct {
@@ -260,6 +267,8 @@ func parseOverflowStrategy(value string) (hyperlogger.AsyncOverflowStrategy, err
 		return hyperlogger.AsyncOverflowBlock, nil
 	case "drop_oldest", "drop-oldest":
 		return hyperlogger.AsyncOverflowDropOldest, nil
+	case "handoff":
+		return hyperlogger.AsyncOverflowHandoff, nil
 	default:
 		return hyperlogger.AsyncOverflowDropNewest, ewrap.New("unsupported async overflow strategy").
 			WithMetadata("strategy", value)
@@ -336,6 +345,46 @@ func applySampling(cfg *hyperlogger.SamplingConfig, raw rawSamplingConfig) error
 		cfg.PerLevelThreshold = *raw.PerLevelThreshold
 	}
 
+	return applySamplingRules(cfg, raw.Rules)
+}
+
+func applySamplingRules(cfg *hyperlogger.SamplingConfig, rawRules map[string]rawSamplingRule) error {
+	if len(rawRules) == 0 {
+		return nil
+	}
+
+	if cfg.Rules == nil {
+		cfg.Rules = make(map[hyperlogger.Level]hyperlogger.SamplingRule)
+	}
+
+	for key, rule := range rawRules {
+		level, err := levelFromString(key)
+		if err != nil {
+			return err
+		}
+
+		enabled := true
+		if rule.Enabled != nil {
+			enabled = *rule.Enabled
+		}
+
+		initial := cfg.Initial
+		if rule.Initial != nil {
+			initial = *rule.Initial
+		}
+
+		thereafter := cfg.Thereafter
+		if rule.Thereafter != nil {
+			thereafter = *rule.Thereafter
+		}
+
+		cfg.Rules[level] = hyperlogger.SamplingRule{
+			Enabled:    enabled,
+			Initial:    initial,
+			Thereafter: thereafter,
+		}
+	}
+
 	return nil
 }
 
@@ -373,6 +422,24 @@ func allKeys() []string {
 		"sampling.initial",
 		"sampling.thereafter",
 		"sampling.per_level_threshold",
+		"sampling.rules.trace.enabled",
+		"sampling.rules.trace.initial",
+		"sampling.rules.trace.thereafter",
+		"sampling.rules.debug.enabled",
+		"sampling.rules.debug.initial",
+		"sampling.rules.debug.thereafter",
+		"sampling.rules.info.enabled",
+		"sampling.rules.info.initial",
+		"sampling.rules.info.thereafter",
+		"sampling.rules.warn.enabled",
+		"sampling.rules.warn.initial",
+		"sampling.rules.warn.thereafter",
+		"sampling.rules.error.enabled",
+		"sampling.rules.error.initial",
+		"sampling.rules.error.thereafter",
+		"sampling.rules.fatal.enabled",
+		"sampling.rules.fatal.initial",
+		"sampling.rules.fatal.thereafter",
 		"file.path",
 		"file.max_size",
 		"file.compress",

@@ -193,6 +193,22 @@ func TestWithAsyncDropHandler(t *testing.T) {
 	}
 }
 
+func TestWithAsyncMetricsHandler(t *testing.T) {
+	called := false
+	config := NewConfigBuilder().WithAsyncMetricsHandler(func(ctx context.Context, metrics AsyncMetrics) {
+		called = true
+	}).Build()
+
+	if config.AsyncMetricsHandler == nil {
+		t.Fatal("expected async metrics handler to be set")
+	}
+
+	config.AsyncMetricsHandler(context.Background(), AsyncMetrics{})
+	if !called {
+		t.Fatal("expected handler to be invoked")
+	}
+}
+
 func TestWithContextExtractor(t *testing.T) {
 	var saw bool
 	type ctxKey struct{}
@@ -316,6 +332,26 @@ func TestWithSampling(t *testing.T) {
 
 	if !config.Sampling.PerLevelThreshold {
 		t.Error("WithSampling did not set PerLevelThreshold correctly")
+	}
+}
+
+func TestWithSamplingRule(t *testing.T) {
+	rule := SamplingRule{Enabled: true, Initial: 5, Thereafter: 3}
+	config := NewConfigBuilder().WithSampling(true, 100, 10, false).
+		WithSamplingRule(InfoLevel, rule).
+		Build()
+
+	if len(config.Sampling.Rules) != 1 {
+		t.Fatalf("expected 1 sampling rule, got %d", len(config.Sampling.Rules))
+	}
+
+	stored, ok := config.Sampling.Rules[InfoLevel]
+	if !ok {
+		t.Fatalf("expected rule for info level")
+	}
+
+	if stored.Initial != 5 || stored.Thereafter != 3 || !stored.Enabled {
+		t.Fatalf("unexpected rule stored: %+v", stored)
 	}
 }
 

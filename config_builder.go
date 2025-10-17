@@ -175,6 +175,13 @@ func (b *ConfigBuilder) WithAsyncDropHandler(handler func([]byte)) *ConfigBuilde
 	return b
 }
 
+// WithAsyncMetricsHandler sets the handler that receives async writer metrics snapshots.
+func (b *ConfigBuilder) WithAsyncMetricsHandler(handler AsyncMetricsHandler) *ConfigBuilder {
+	b.config.AsyncMetricsHandler = handler
+
+	return b
+}
+
 // WithEncoder assigns a custom encoder to the configuration.
 func (b *ConfigBuilder) WithEncoder(encoder Encoder) *ConfigBuilder {
 	b.config.Encoder = encoder
@@ -255,6 +262,34 @@ func (b *ConfigBuilder) WithSampling(enabled bool, initial, thereafter int, perL
 	b.config.Sampling.Initial = initial
 	b.config.Sampling.Thereafter = thereafter
 	b.config.Sampling.PerLevelThreshold = perLevel
+
+	return b
+}
+
+// WithSamplingRule sets or overrides sampling behaviour for a specific level.
+func (b *ConfigBuilder) WithSamplingRule(level Level, rule SamplingRule) *ConfigBuilder {
+	if !level.IsValid() {
+		return b
+	}
+
+	if b.config.Sampling.Rules == nil {
+		b.config.Sampling.Rules = make(map[Level]SamplingRule)
+	}
+
+	b.config.Sampling.Rules[level] = rule
+
+	return b
+}
+
+// WithSamplingRules merges multiple sampling rules into the configuration.
+func (b *ConfigBuilder) WithSamplingRules(rules map[Level]SamplingRule) *ConfigBuilder {
+	if len(rules) == 0 {
+		return b
+	}
+
+	for level, rule := range rules {
+		b.WithSamplingRule(level, rule)
+	}
 
 	return b
 }

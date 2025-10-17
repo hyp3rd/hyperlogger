@@ -44,6 +44,15 @@ type SamplingConfig struct {
 	Thereafter int
 	// PerLevelThreshold when true, applies separate thresholds per level.
 	PerLevelThreshold bool
+	// Rules overrides sampling configuration per level.
+	Rules map[Level]SamplingRule
+}
+
+// SamplingRule customizes sampling configuration for a specific level.
+type SamplingRule struct {
+	Enabled    bool
+	Initial    int
+	Thereafter int
 }
 
 // AsyncOverflowStrategy defines how the async writer handles a full buffer.
@@ -56,12 +65,14 @@ const (
 	AsyncOverflowBlock
 	// AsyncOverflowDropOldest discards the oldest buffered log entry to make room for a new one.
 	AsyncOverflowDropOldest
+	// AsyncOverflowHandoff writes the log entry synchronously when the buffer is full.
+	AsyncOverflowHandoff
 )
 
 // IsValid reports whether the strategy value is recognised.
 func (s AsyncOverflowStrategy) IsValid() bool {
 	switch s {
-	case AsyncOverflowDropNewest, AsyncOverflowBlock, AsyncOverflowDropOldest:
+	case AsyncOverflowDropNewest, AsyncOverflowBlock, AsyncOverflowDropOldest, AsyncOverflowHandoff:
 		return true
 	default:
 		return false
@@ -125,6 +136,8 @@ type Config struct {
 	AsyncOverflowStrategy AsyncOverflowStrategy
 	// AsyncDropHandler is invoked when the async writer drops a log entry.
 	AsyncDropHandler func([]byte)
+	// AsyncMetricsHandler receives async writer metrics snapshots.
+	AsyncMetricsHandler AsyncMetricsHandler
 	// DisableTimestamp disables timestamp in log entries.
 	DisableTimestamp bool
 	// AdditionalFields adds these fields to all log entries.

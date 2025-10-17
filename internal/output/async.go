@@ -57,6 +57,7 @@ type AsyncWriter struct {
 	droppedCount   atomic.Uint64
 	writeErrors    atomic.Uint64
 	retryCount     atomic.Uint64
+	bypassCount    atomic.Uint64
 }
 
 // AsyncMetrics provides insight into the internal state of the AsyncWriter.
@@ -67,6 +68,7 @@ type AsyncMetrics struct {
 	WriteError uint64
 	Retried    uint64
 	QueueDepth int
+	Bypassed   uint64
 }
 
 // AsyncOverflowStrategy defines how AsyncWriter behaves when buffer is full.
@@ -79,6 +81,8 @@ const (
 	AsyncOverflowBlock
 	// AsyncOverflowDropOldest discards the oldest buffered entry to make space for the new one.
 	AsyncOverflowDropOldest
+	// AsyncOverflowHandoff writes the entry synchronously when the buffer is full.
+	AsyncOverflowHandoff
 )
 
 const (
@@ -151,7 +155,7 @@ func (w *AsyncWriter) Write(data []byte) (int, error) {
 	buf := make([]byte, len(data))
 	copy(buf, data)
 
-	//nolint:exhaustive // output.AsyncOverflowDropNewest is the default behavior
+	//nolint:exhaustive // AsyncOverflowDropNewest is the default behaviour
 	switch w.config.OverflowStrategy {
 	case AsyncOverflowBlock:
 		select {
@@ -181,6 +185,14 @@ func (w *AsyncWriter) Write(data []byte) (int, error) {
 		w.recordOverflow(buf)
 
 		return 0, ErrBufferFull
+	case AsyncOverflowHandoff:
+		if w.tryEnqueue(buf) {
+			w.reportMetrics()
+
+			return len(data), nil
+		}
+
+		return w.writeDirect(buf)
 	default:
 		if w.tryEnqueue(buf) {
 			w.reportMetrics()
@@ -227,6 +239,22 @@ func (w *AsyncWriter) Flush() error {
 	}
 }
 
+// WriteCritical bypasses the internal buffer and writes synchronously.
+func (w *AsyncWriter) WriteCritical(data []byte) (int, error) {
+	w.closeMutex.Lock()
+	closed := w.closed
+	w.closeMutex.Unlock()
+
+	if closed {
+		return 0, ErrWriterClosed
+	}
+
+	buf := make([]byte, len(data))
+	copy(buf, data)
+
+	return w.writeDirect(buf)
+}
+
 // Close stops the background goroutine and closes the message channel.
 func (w *AsyncWriter) Close() error {
 	w.closeMutex.Lock()
@@ -262,6 +290,7 @@ func (w *AsyncWriter) Metrics() AsyncMetrics {
 		WriteError: w.writeErrors.Load(),
 		Retried:    w.retryCount.Load(),
 		QueueDepth: len(w.msgCh),
+		Bypassed:   w.bypassCount.Load(),
 	}
 }
 
@@ -334,35 +363,9 @@ func (w *AsyncWriter) processLogs() {
 
 // writeMessage writes a single message to the underlying writer.
 func (w *AsyncWriter) writeMessage(msg []byte) {
-	attempt := 0
-	backoff := w.config.RetryBackoff
-
-	for {
-		_, err := w.out.Write(msg)
-		if err == nil {
-			w.processedCount.Add(1)
-			w.reportMetrics()
-
-			return
-		}
-
-		w.writeErrors.Add(1)
-
-		if w.config.ErrorHandler != nil {
-			w.config.ErrorHandler(err)
-		}
-
-		if !w.config.RetryEnabled || attempt >= w.config.MaxRetries {
-			w.reportMetrics()
-
-			return
-		}
-
-		attempt++
-
-		w.retryCount.Add(1)
-		time.Sleep(backoff)
-		backoff = time.Duration(math.Min(float64(w.config.RetryMaxBackoff), float64(backoff)*w.config.RetryBackoffMultiplier))
+	err := w.performWrite(msg)
+	if err != nil {
+		w.handleWriteFailure(msg)
 	}
 }
 
@@ -385,6 +388,51 @@ func (w *AsyncWriter) handleFlush(doneCh chan struct{}) {
 
 			return
 		}
+	}
+}
+
+func (w *AsyncWriter) writeDirect(msg []byte) (int, error) {
+	err := w.performWrite(msg)
+	if err != nil {
+		return 0, err
+	}
+
+	w.bypassCount.Add(1)
+	w.reportMetrics()
+
+	return len(msg), nil
+}
+
+func (w *AsyncWriter) performWrite(msg []byte) error {
+	attempt := 0
+	backoff := w.config.RetryBackoff
+
+	for {
+		_, err := w.out.Write(msg)
+		if err == nil {
+			w.processedCount.Add(1)
+			w.reportMetrics()
+
+			return nil
+		}
+
+		w.writeErrors.Add(1)
+
+		if w.config.ErrorHandler != nil {
+			w.config.ErrorHandler(err)
+		}
+
+		if !w.config.RetryEnabled || attempt >= w.config.MaxRetries {
+			w.reportMetrics()
+
+			return ewrap.Wrap(err, "writing log message")
+		}
+
+		attempt++
+
+		w.retryCount.Add(1)
+		time.Sleep(backoff)
+		backoff = time.Duration(math.Min(float64(w.config.RetryMaxBackoff), float64(backoff)*w.config.RetryBackoffMultiplier))
 	}
 }
 
@@ -439,4 +487,13 @@ func (w *AsyncWriter) tryEnqueue(buf []byte) bool {
 	default:
 		return false
 	}
+}
+
+func (w *AsyncWriter) handleWriteFailure(msg []byte) {
+	if w.config.DropHandler != nil {
+		w.config.DropHandler(msg)
+	}
+
+	w.droppedCount.Add(1)
+	w.reportMetrics()
 }

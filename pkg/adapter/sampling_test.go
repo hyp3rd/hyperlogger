@@ -77,6 +77,56 @@ func TestLogSamplerPerLevel(t *testing.T) {
 	}
 }
 
+func TestLogSamplerRules(t *testing.T) {
+	cfg := hyperlogger.SamplingConfig{
+		Enabled:           true,
+		Initial:           1,
+		Thereafter:        5,
+		PerLevelThreshold: false,
+		Rules: map[hyperlogger.Level]hyperlogger.SamplingRule{
+			hyperlogger.DebugLevel: {
+				Enabled:    true,
+				Initial:    2,
+				Thereafter: 2,
+			},
+			hyperlogger.TraceLevel: {
+				Enabled: false,
+			},
+		},
+	}
+
+	sampler := newLogSampler(cfg)
+	if sampler == nil {
+		t.Fatal("expected sampler to be created")
+	}
+
+	// Trace should bypass sampling entirely due to disabled rule.
+	for i := 0; i < 10; i++ {
+		if !sampler.Allow(hyperlogger.TraceLevel) {
+			t.Fatalf("expected trace level to bypass sampling")
+		}
+	}
+
+	// Debug uses per-level rule with different cadence.
+	if !sampler.Allow(hyperlogger.DebugLevel) {
+		t.Fatalf("expected first debug to pass")
+	}
+	if !sampler.Allow(hyperlogger.DebugLevel) {
+		t.Fatalf("expected second debug to pass (initial=2)")
+	}
+	if sampler.Allow(hyperlogger.DebugLevel) {
+		t.Fatalf("expected third debug to be sampled")
+	}
+
+	// Info falls back to default rule.
+	if !sampler.Allow(hyperlogger.InfoLevel) {
+		t.Fatalf("expected first info to pass")
+	}
+	if sampler.Allow(hyperlogger.InfoLevel) {
+		t.Fatalf("expected subsequent info to follow default cadence")
+	}
+}
+
 func TestLogSamplerConcurrency(t *testing.T) {
 	cfg := hyperlogger.SamplingConfig{
 		Enabled:    true,

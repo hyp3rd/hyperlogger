@@ -23,6 +23,9 @@ func TestFromEnvOverrides(t *testing.T) {
 	t.Setenv("APP_SAMPLING_ENABLED", "true")
 	t.Setenv("APP_SAMPLING_INITIAL", "10")
 	t.Setenv("APP_SAMPLING_THEREAFTER", "5")
+	t.Setenv("APP_SAMPLING_RULES_DEBUG_ENABLED", "true")
+	t.Setenv("APP_SAMPLING_RULES_DEBUG_INITIAL", "3")
+	t.Setenv("APP_SAMPLING_RULES_DEBUG_THEREAFTER", "7")
 
 	cfg, err := FromEnv("app")
 	require.NoError(t, err)
@@ -39,6 +42,7 @@ func TestFromEnvOverrides(t *testing.T) {
 	require.True(t, cfg.Sampling.Enabled)
 	require.Equal(t, 10, cfg.Sampling.Initial)
 	require.Equal(t, 5, cfg.Sampling.Thereafter)
+	require.Equal(t, hyperlogger.SamplingRule{Enabled: true, Initial: 3, Thereafter: 7}, cfg.Sampling.Rules[hyperlogger.DebugLevel])
 }
 
 func TestFromFileWithEnvOverride(t *testing.T) {
@@ -60,6 +64,13 @@ sampling:
   enabled: true
   initial: 7
   thereafter: 3
+  rules:
+    trace:
+      enabled: false
+    debug:
+      enabled: true
+      initial: 4
+      thereafter: 2
 file:
   path: service.log
   max_size: 1048576
@@ -87,6 +98,8 @@ file:
 	require.True(t, cfg.Sampling.Enabled)
 	require.Equal(t, 7, cfg.Sampling.Initial)
 	require.Equal(t, 3, cfg.Sampling.Thereafter)
+	require.False(t, cfg.Sampling.Rules[hyperlogger.TraceLevel].Enabled)
+	require.Equal(t, hyperlogger.SamplingRule{Enabled: true, Initial: 4, Thereafter: 2}, cfg.Sampling.Rules[hyperlogger.DebugLevel])
 	require.Equal(t, "service.log", cfg.File.Path)
 	require.True(t, cfg.File.Compress)
 	require.Equal(t, 14, cfg.File.MaxAge)

@@ -287,6 +287,18 @@ log = log.WithFields(
 log = log.WithError(err)
 ```
 
+```go
+// Register a global extractor that enriches every logger with trace metadata
+logger.RegisterContextExtractor(func(ctx context.Context) []logger.Field {
+    if traceID, ok := ctx.Value(constants.TraceKey{}).(string); ok && traceID != "" {
+        return []logger.Field{{Key: "trace_id", Value: traceID}}
+    }
+    return nil
+})
+```
+
+Global extractors run in addition to per-logger extractors configured through the builder, making it easy to centralize cross-cutting enrichment logic.
+
 ### Sync - Ensuring Logs are Written
 
 When using asynchronous logging, it's crucial to call the `Sync()` method before your application exits to ensure all buffered logs are written:
@@ -374,6 +386,19 @@ The AsyncWriter implementation provides:
 - Proper cleanup with the `Sync()` method
 - Configurable buffer size and timeout
 - Error handling for failed write operations
+- Multiple overflow strategies (`drop_newest`, `block`, `drop_oldest`, `handoff`)
+- Metrics callbacks that surface queue depth, drop counts, and synchronous bypasses
+
+```go
+log, err := adapter.NewAdapter(*logger.NewConfigBuilder().
+    WithConsoleOutput().
+    WithAsyncLogging(true, 1024).
+    WithAsyncOverflowStrategy(logger.AsyncOverflowHandoff).
+    WithAsyncMetricsHandler(func(ctx context.Context, metrics logger.AsyncMetrics) {
+        asyncDrops.Add(float64(metrics.Dropped))
+    }).
+    Build())
+```
 
 ### Log Sampling
 
@@ -381,11 +406,16 @@ When dealing with high-volume logging, you can enable sampling to prevent overwh
 
 ```go
 // Allow first 1000 logs at each level, then only log 1/100
-log, err := adapter.NewAdapter(*logger.NewConfigBuilder().
+b := logger.NewConfigBuilder().
     WithConsoleOutput().
     WithSampling(true, 1000, 100, true).
-    Build())
+    WithSamplingRule(logger.DebugLevel, logger.SamplingRule{Enabled: true, Initial: 200, Thereafter: 10}).
+    WithSamplingRule(logger.TraceLevel, logger.SamplingRule{Enabled: false})
+
+log, err := adapter.NewAdapter(*b.Build())
 ```
+
+Per-level sampling rules allow you to keep stack traces for specific levels while aggressively sampling noisy ones.
 
 ### Enhanced File Management
 

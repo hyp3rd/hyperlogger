@@ -119,6 +119,67 @@ func TestNewAsyncWriter(t *testing.T) {
 			t.Error("Error handler was not called")
 		}
 	})
+
+	t.Run("handoff strategy", func(t *testing.T) {
+		writer := newMockWriter()
+		writer.writeDelay = 200 * time.Millisecond
+
+		async := NewAsyncWriter(writer, AsyncConfig{
+			BufferSize:       1,
+			OverflowStrategy: AsyncOverflowHandoff,
+		})
+		defer async.Close()
+
+		if _, err := async.Write([]byte("first")); err != nil {
+			t.Fatalf("first write failed: %v", err)
+		}
+
+		if _, err := async.Write([]byte("second")); err != nil {
+			t.Fatalf("handoff write failed: %v", err)
+		}
+
+		time.Sleep(250 * time.Millisecond)
+		_ = async.Flush()
+
+		data := writer.getWrittenData()
+		if len(data) != 2 {
+			t.Fatalf("expected two writes, got %d", len(data))
+		}
+
+		metrics := async.Metrics()
+		if metrics.Bypassed == 0 {
+			t.Fatalf("expected bypassed writes to be tracked")
+		}
+	})
+
+	t.Run("write critical bypasses queue", func(t *testing.T) {
+		writer := newMockWriter()
+		writer.writeDelay = 200 * time.Millisecond
+
+		async := NewAsyncWriter(writer, AsyncConfig{BufferSize: 1})
+		defer async.Close()
+
+		if _, err := async.Write([]byte("background")); err != nil {
+			t.Fatalf("initial write failed: %v", err)
+		}
+
+		if _, err := async.WriteCritical([]byte("critical")); err != nil {
+			t.Fatalf("critical write failed: %v", err)
+		}
+
+		time.Sleep(250 * time.Millisecond)
+		_ = async.Flush()
+
+		written := writer.getWrittenData()
+		if len(written) != 2 {
+			t.Fatalf("expected two messages written, got %d", len(written))
+		}
+
+		metrics := async.Metrics()
+		if metrics.Bypassed < 1 {
+			t.Fatalf("expected bypassed count to increase")
+		}
+	})
 }
 
 func TestAsyncWriter_Write(t *testing.T) {
@@ -286,11 +347,72 @@ func TestAsyncWriter_Write(t *testing.T) {
 			t.Fatalf("expected both messages to be written, got %v", written)
 		}
 	})
+
+	t.Run("handoff strategy", func(t *testing.T) {
+		writer := newMockWriter()
+		writer.writeDelay = 200 * time.Millisecond
+
+		async := NewAsyncWriter(writer, AsyncConfig{
+			BufferSize:       1,
+			OverflowStrategy: AsyncOverflowHandoff,
+		})
+		defer async.Close()
+
+		if _, err := async.Write([]byte("first")); err != nil {
+			t.Fatalf("first write failed: %v", err)
+		}
+
+		if _, err := async.Write([]byte("second")); err != nil {
+			t.Fatalf("handoff write failed: %v", err)
+		}
+
+		time.Sleep(250 * time.Millisecond)
+		_ = async.Flush()
+
+		written := writer.getWrittenData()
+		if len(written) != 2 {
+			t.Fatalf("expected two messages written, got %d", len(written))
+		}
+
+		metrics := async.Metrics()
+		if metrics.Bypassed == 0 {
+			t.Fatalf("expected bypassed writes to be recorded")
+		}
+	})
+
+	t.Run("write critical bypasses queue", func(t *testing.T) {
+		writer := newMockWriter()
+		writer.writeDelay = 200 * time.Millisecond
+
+		async := NewAsyncWriter(writer, AsyncConfig{BufferSize: 1})
+		defer async.Close()
+
+		if _, err := async.Write([]byte("background")); err != nil {
+			t.Fatalf("initial write failed: %v", err)
+		}
+
+		if _, err := async.WriteCritical([]byte("critical")); err != nil {
+			t.Fatalf("critical write failed: %v", err)
+		}
+
+		time.Sleep(250 * time.Millisecond)
+		_ = async.Flush()
+
+		written := writer.getWrittenData()
+		if len(written) != 2 {
+			t.Fatalf("expected two messages written, got %d", len(written))
+		}
+
+		metrics := async.Metrics()
+		if metrics.Bypassed < 1 {
+			t.Fatalf("expected bypassed metrics to increase")
+		}
+	})
 }
 
 func TestAsyncWriter_Metrics(t *testing.T) {
 	writer := newMockWriter()
-	writer.writeDelay = 100 * time.Millisecond
+	writer.writeDelay = 750 * time.Millisecond
 
 	var reported atomic.Pointer[AsyncMetrics]
 	async := NewAsyncWriter(writer, AsyncConfig{
@@ -306,10 +428,31 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 	_, err := async.Write([]byte("first"))
 	require.NoError(t, err)
 
-	_, err = async.Write([]byte("second"))
-	require.ErrorIs(t, err, ErrBufferFull)
+	var overflow bool
+	deadline := time.Now().Add(2 * time.Second)
+	for !overflow && time.Now().Before(deadline) {
+		_, err = async.Write([]byte("second"))
+		if err == nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
 
-	time.Sleep(150 * time.Millisecond)
+		if !errors.Is(err, ErrBufferFull) {
+			t.Fatalf("expected ErrBufferFull or nil, got %v", err)
+		}
+
+		overflow = true
+	}
+
+	if !overflow {
+		t.Fatal("failed to trigger buffer overflow")
+	}
+
+	writer.mu.Lock()
+	writer.writeDelay = 0
+	writer.mu.Unlock()
+
+	time.Sleep(200 * time.Millisecond)
 
 	snapshot := async.Metrics()
 	if snapshot.Enqueued == 0 {
@@ -318,6 +461,10 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 
 	if snapshot.Dropped == 0 {
 		t.Fatalf("expected dropped entries to be tracked")
+	}
+
+	if snapshot.Bypassed != 0 {
+		t.Fatalf("expected bypassed entries to remain zero")
 	}
 
 	if latest := reported.Load(); latest == nil || latest.Dropped == 0 {

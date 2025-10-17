@@ -157,13 +157,15 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 		return nil, err
 	}
 
+	normalizedCtx := normalizeContext(ctx)
+
 	// Initialize adapter
 	adapter := &Adapter{
 		config:       &config,
 		level:        new(atomic.Uint32),
 		hookRegistry: hyperlogger.NewHookRegistry(),
 		fields:       cloneFields(config.AdditionalFields),
-		ctx:          normalizeContext(ctx),
+		ctx:          normalizedCtx,
 		encoder:      enc,
 	}
 
@@ -182,6 +184,14 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 			ErrorHandler:     func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
 			OverflowStrategy: convertOverflowStrategy(config.AsyncOverflowStrategy),
 			DropHandler:      config.AsyncDropHandler,
+			MetricsReporter: func(metrics output.AsyncMetrics) {
+				mapped := toAsyncMetrics(metrics)
+				if config.AsyncMetricsHandler != nil {
+					config.AsyncMetricsHandler(normalizedCtx, mapped)
+				}
+
+				hyperlogger.EmitAsyncMetrics(normalizedCtx, mapped)
+			},
 		}
 
 		adapter.config.Output = output.NewAsyncWriter(config.Output, asyncConfig)
@@ -591,8 +601,22 @@ func convertOverflowStrategy(strategy hyperlogger.AsyncOverflowStrategy) output.
 		return output.AsyncOverflowBlock
 	case hyperlogger.AsyncOverflowDropOldest:
 		return output.AsyncOverflowDropOldest
+	case hyperlogger.AsyncOverflowHandoff:
+		return output.AsyncOverflowHandoff
 	default:
 		return output.AsyncOverflowDropNewest
+	}
+}
+
+func toAsyncMetrics(metrics output.AsyncMetrics) hyperlogger.AsyncMetrics {
+	return hyperlogger.AsyncMetrics{
+		Enqueued:   metrics.Enqueued,
+		Processed:  metrics.Processed,
+		Dropped:    metrics.Dropped,
+		WriteError: metrics.WriteError,
+		Retried:    metrics.Retried,
+		QueueDepth: metrics.QueueDepth,
+		Bypassed:   metrics.Bypassed,
 	}
 }
 
@@ -745,16 +769,12 @@ func withContext(ctx context.Context, fields []hyperlogger.Field, cfg *hyperlogg
 
 	extras = extractContextKeys(ctx, extras)
 
-	if cfg != nil {
-		for _, extractor := range cfg.ContextExtractors {
-			if extractor == nil {
-				continue
-			}
+	if global := hyperlogger.GlobalContextExtractors(); len(global) > 0 {
+		extras = append(extras, hyperlogger.ApplyContextExtractors(ctx, global...)...)
+	}
 
-			if extracted := extractor(ctx); len(extracted) > 0 {
-				extras = append(extras, extracted...)
-			}
-		}
+	if cfg != nil {
+		extras = append(extras, hyperlogger.ApplyContextExtractors(ctx, cfg.ContextExtractors...)...)
 	}
 
 	if len(extras) == 0 {
@@ -1217,8 +1237,17 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 		return
 	}
 
-	// Write to output
-	_, err = a.config.Output.Write(encoded)
+	// Write to output, ensuring critical levels bypass async queues when necessary.
+	if asyncWriter, ok := a.config.Output.(*output.AsyncWriter); ok {
+		if level >= hyperlogger.ErrorLevel {
+			_, err = asyncWriter.WriteCritical(encoded)
+		} else {
+			_, err = asyncWriter.Write(encoded)
+		}
+	} else {
+		_, err = a.config.Output.Write(encoded)
+	}
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to write log: %v\n", err)
 	}

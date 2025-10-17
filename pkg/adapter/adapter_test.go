@@ -659,6 +659,86 @@ func TestAdapter_CustomContextExtractors(t *testing.T) {
 	assert.Contains(t, output, `"custom":"value123"`)
 }
 
+func TestAdapter_GlobalContextExtractors(t *testing.T) {
+	defer hyperlogger.ClearContextExtractors()
+
+	hyperlogger.ClearContextExtractors()
+	hyperlogger.RegisterContextExtractor(func(ctx context.Context) []hyperlogger.Field {
+		if v, ok := ctx.Value(constants.TraceKey{}).(string); ok {
+			return []hyperlogger.Field{{Key: "trace", Value: v}}
+		}
+
+		return nil
+	})
+
+	buf := &bytes.Buffer{}
+	cfg := hyperlogger.Config{}
+	cfg.Output = buf
+	cfg.EnableJSON = true
+	cfg.Level = hyperlogger.DebugLevel
+	loggerInstance, err := NewAdapter(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error creating adapter: %v", err)
+	}
+
+	ctx := context.WithValue(context.Background(), constants.TraceKey{}, "trace-xyz")
+	loggerInstance.WithContext(ctx).Info("global context")
+
+	output := buf.String()
+	if !strings.Contains(output, `"trace":"trace-xyz"`) {
+		t.Fatalf("expected output to contain trace field, got %s", output)
+	}
+}
+
+func TestAdapter_AsyncMetricsHandler(t *testing.T) {
+	hyperlogger.ClearAsyncMetricsHandlers()
+	defer hyperlogger.ClearAsyncMetricsHandlers()
+
+	var mu sync.Mutex
+	var localSnapshots []hyperlogger.AsyncMetrics
+	var globalSnapshots []hyperlogger.AsyncMetrics
+
+	config := hyperlogger.Config{}
+	config.Output = &bytes.Buffer{}
+	config.Level = hyperlogger.InfoLevel
+	config.EnableAsync = true
+	config.AsyncBufferSize = 1
+	config.AsyncOverflowStrategy = hyperlogger.AsyncOverflowDropNewest
+	config.AsyncMetricsHandler = func(ctx context.Context, metrics hyperlogger.AsyncMetrics) {
+		mu.Lock()
+		localSnapshots = append(localSnapshots, metrics)
+		mu.Unlock()
+	}
+
+	hyperlogger.RegisterAsyncMetricsHandler(func(ctx context.Context, metrics hyperlogger.AsyncMetrics) {
+		mu.Lock()
+		globalSnapshots = append(globalSnapshots, metrics)
+		mu.Unlock()
+	})
+
+	loggerInstance, err := NewAdapter(context.Background(), config)
+	if err != nil {
+		t.Fatalf("unexpected error creating adapter: %v", err)
+	}
+
+	loggerInstance.Info("first message")
+	loggerInstance.Info("second message")
+
+	time.Sleep(100 * time.Millisecond)
+	_ = loggerInstance.Sync()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(localSnapshots) == 0 {
+		t.Fatalf("expected async metrics handler to receive updates")
+	}
+
+	if len(globalSnapshots) == 0 {
+		t.Fatalf("expected global async metrics handler to receive updates")
+	}
+}
+
 func TestAdapter_CustomEncoderByName(t *testing.T) {
 	buf := &bytes.Buffer{}
 	name := "test-encoder-" + t.Name()
