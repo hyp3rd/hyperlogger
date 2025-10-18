@@ -57,6 +57,8 @@ const (
 	asciiControlEnd   = 126 // End of ASCII printable characters (~)
 )
 
+const fieldSnapshotSlack = 4 // Extra capacity to reduce frequent reallocations
+
 var (
 	// ErrNoFilePathSet indicates that the file path is not set for file output.
 	ErrNoFilePathSet = ewrap.New("file path not set for file output")
@@ -138,6 +140,8 @@ type Adapter struct {
 
 	// Unified buffer pool system
 	bufferPool []*bufferPoolBucket
+
+	fieldsPool sync.Pool
 }
 
 // NewAdapter creates a new logger adapter with the given configuration.
@@ -167,6 +171,14 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 		fields:       cloneFields(config.AdditionalFields),
 		ctx:          normalizedCtx,
 		encoder:      enc,
+	}
+
+	adapter.fieldsPool = sync.Pool{
+		New: func() any {
+			slice := make([]hyperlogger.Field, 0, len(adapter.fields)+fieldSnapshotSlack)
+
+			return &slice
+		},
 	}
 
 	adapter.level.Store(uint32(config.Level))
@@ -448,6 +460,49 @@ func cloneFields(fields []hyperlogger.Field) []hyperlogger.Field {
 	copy(cloned, fields)
 
 	return cloned
+}
+
+func (a *Adapter) borrowFieldsSnapshot() ([]hyperlogger.Field, *[]hyperlogger.Field) {
+	baseLen := len(a.fields)
+	raw := a.fieldsPool.Get()
+
+	var (
+		storage *[]hyperlogger.Field
+		ok      bool
+	)
+
+	if raw == nil {
+		slice := make([]hyperlogger.Field, 0, baseLen)
+		storage = &slice
+	} else {
+		storage, ok = raw.(*[]hyperlogger.Field)
+		if !ok {
+			storage = &[]hyperlogger.Field{}
+		}
+	}
+
+	fields := *storage
+	if cap(fields) < baseLen {
+		fields = make([]hyperlogger.Field, baseLen)
+	} else {
+		fields = fields[:baseLen]
+	}
+
+	copy(fields, a.fields)
+	*storage = fields
+
+	return fields, storage
+}
+
+func (a *Adapter) releaseFieldsSnapshot(storage *[]hyperlogger.Field) {
+	fields := *storage
+	for i := range fields {
+		fields[i] = hyperlogger.Field{}
+	}
+
+	fields = fields[:0]
+	*storage = fields
+	a.fieldsPool.Put(storage)
 }
 
 func prepareOutput(config *hyperlogger.Config) error {
@@ -1212,10 +1267,13 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 	}
 
 	// Create log entry with cloned base fields to avoid cross-request mutation.
+	baseFields, storage := a.borrowFieldsSnapshot()
+	defer a.releaseFieldsSnapshot(storage)
+
 	entry := &hyperlogger.Entry{
 		Level:   level,
 		Message: msg,
-		Fields:  cloneFields(a.fields),
+		Fields:  baseFields,
 	}
 
 	// Add context values to fields
