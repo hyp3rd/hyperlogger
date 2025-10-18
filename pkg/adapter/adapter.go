@@ -35,6 +35,9 @@ const (
 	largeBufferSize  = 16384
 	xlargeBufferSize = 32768
 
+	float32BitSize = 32
+	float64BitSize = 64
+
 	// Predicted sizes by message type to reduce reallocations.
 	jsonBaseSize     = 200 // Base size for JSON messages
 	consoleBaseSize  = 100 // Base size for console messages
@@ -355,7 +358,7 @@ func (a *Adapter) WithError(err error) hyperlogger.Logger {
 		return a
 	}
 
-	return a.WithField("error", err.Error())
+	return a.WithField("error", err)
 }
 
 // GetLevel returns the current logging level.
@@ -706,18 +709,21 @@ func appendOrReplaceField(base []hyperlogger.Field, field hyperlogger.Field) []h
 		return []hyperlogger.Field{field}
 	}
 
-	result := make([]hyperlogger.Field, len(base), len(base)+1)
-	copy(result, base)
+	result := cloneFields(base)
 
-	for i := range result {
-		if result[i].Key == field.Key {
-			result[i].Value = field.Value
+	return appendOrReplaceInPlace(result, field)
+}
 
-			return result
+func appendOrReplaceInPlace(fields []hyperlogger.Field, field hyperlogger.Field) []hyperlogger.Field {
+	for i := range fields {
+		if fields[i].Key == field.Key {
+			fields[i].Value = field.Value
+
+			return fields
 		}
 	}
 
-	return append(result, field)
+	return append(fields, field)
 }
 
 func mergeFieldSets(base []hyperlogger.Field, extras []hyperlogger.Field) []hyperlogger.Field {
@@ -725,46 +731,25 @@ func mergeFieldSets(base []hyperlogger.Field, extras []hyperlogger.Field) []hype
 		return cloneFields(extras)
 	}
 
-	result := make([]hyperlogger.Field, len(base), len(base)+len(extras))
-	copy(result, base)
+	result := append(make([]hyperlogger.Field, 0, len(base)+len(extras)), base...)
 
 	for _, extra := range extras {
-		replaced := false
-
-		for i := range result {
-			if result[i].Key == extra.Key {
-				result[i].Value = extra.Value
-				replaced = true
-
-				break
-			}
-		}
-
-		if !replaced {
-			result = append(result, extra)
-		}
+		result = appendOrReplaceInPlace(result, extra)
 	}
 
 	return result
 }
 
-// mergeFields combines multiple field slices into a single slice, avoiding duplicates.
-// Fields from later slices override those from earlier ones if they have the same key.
-func mergeFields(fields ...[]hyperlogger.Field) []hyperlogger.Field {
-	if len(fields) == 0 {
-		return nil
+func appendFieldsInPlace(fields []hyperlogger.Field, extras []hyperlogger.Field) []hyperlogger.Field {
+	if len(extras) == 0 {
+		return fields
 	}
 
-	result := cloneFields(fields[0])
-	for _, set := range fields[1:] {
-		if len(set) == 0 {
-			continue
-		}
-
-		result = mergeFieldSets(result, set)
+	for _, extra := range extras {
+		fields = appendOrReplaceInPlace(fields, extra)
 	}
 
-	return result
+	return fields
 }
 
 // getLevelColor returns the color code for a log level and a boolean
@@ -901,7 +886,7 @@ func withContext(ctx context.Context, fields []hyperlogger.Field, cfg *hyperlogg
 		return fields
 	}
 
-	return mergeFields(fields, extras)
+	return appendFieldsInPlace(fields, extras)
 }
 
 // extractContextKeys extracts known context keys and adds them as fields.
@@ -945,6 +930,8 @@ func (a *Adapter) attachStackTrace(entry *hyperlogger.Entry) {
 }
 
 // formatValue formats a value for logging.
+//
+//nolint:cyclop,funlen,revive // complexity is acceptable for this utility function. Splitting may reduce readability.
 func formatValue(v any) string {
 	if v == nil {
 		return "null"
@@ -953,9 +940,31 @@ func formatValue(v any) string {
 	switch val := v.(type) {
 	case string:
 		return val
-	case int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64, complex64, complex128:
+	case int:
+		return strconv.Itoa(val)
+	case int8:
+		return strconv.FormatInt(int64(val), 10)
+	case int16:
+		return strconv.FormatInt(int64(val), 10)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, float32BitSize)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, float64BitSize)
+	case complex64, complex128:
 		return fmt.Sprintf("%v", val)
 	case bool:
 		return strconv.FormatBool(val)

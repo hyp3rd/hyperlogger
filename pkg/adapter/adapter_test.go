@@ -954,57 +954,6 @@ func TestAdapter_Sync(t *testing.T) {
 	}
 }
 
-func TestMergeFields(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    [][]hyperlogger.Field
-		expected []hyperlogger.Field
-	}{
-		{
-			name:     "empty input",
-			input:    [][]hyperlogger.Field{},
-			expected: nil,
-		},
-		{
-			name: "single slice",
-			input: [][]hyperlogger.Field{
-				{{Key: "key1", Value: "value1"}},
-			},
-			expected: []hyperlogger.Field{
-				{Key: "key1", Value: "value1"},
-			},
-		},
-		{
-			name: "multiple slices with unique keys",
-			input: [][]hyperlogger.Field{
-				{{Key: "key1", Value: "value1"}},
-				{{Key: "key2", Value: "value2"}},
-			},
-			expected: []hyperlogger.Field{
-				{Key: "key1", Value: "value1"},
-				{Key: "key2", Value: "value2"},
-			},
-		},
-		{
-			name: "duplicate keys - later overrides earlier",
-			input: [][]hyperlogger.Field{
-				{{Key: "key1", Value: "first"}},
-				{{Key: "key1", Value: "second"}},
-			},
-			expected: []hyperlogger.Field{
-				{Key: "key1", Value: "second"},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := mergeFields(tt.input...)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
 func TestFormatValue(t *testing.T) {
 	now := time.Now()
 	tests := []struct {
