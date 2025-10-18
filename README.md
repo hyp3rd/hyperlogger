@@ -104,6 +104,12 @@ func main() {
     exporter := logger.NewAsyncMetricsExporter()
     logger.RegisterAsyncMetricsHandler(exporter.Observe)
     http.Handle("/metrics", exporter)
+
+    go func() {
+        if err := http.ListenAndServe(":9090", nil); err != nil {
+            fmt.Fprintf(os.Stderr, "metrics server error: %v\n", err)
+        }
+    }()
 }
 ```
 
@@ -378,6 +384,12 @@ func (m *MetricsHook) OnLog(entry *logger.Entry) error {
 func (m *MetricsHook) Levels() []logger.Level {
     return []logger.Level{logger.ErrorLevel, logger.FatalLevel}
 }
+
+// Register a global error hook
+logger.RegisterHook(logger.ErrorLevel, func(ctx context.Context, entry *logger.Entry) error {
+    errorCounter.Inc()
+    return nil
+})
 ```
 
 ## Advanced Features
@@ -441,6 +453,24 @@ log, err := adapter.NewAdapter(*b.Build())
 ```
 
 Per-level sampling rules keep critical log levels verbosely while aggressively sampling noisy ones.
+
+### Middleware Helpers
+
+Seed context values automatically using the provided HTTP and gRPC middleware:
+
+```go
+// HTTP middleware enriches context with request identifiers.
+handler := httpmw.ContextMiddleware()(nextHandler)
+
+// gRPC interceptor (build with -tags grpc) maps incoming metadata into context.
+interceptor := grpcmw.UnaryServerInterceptor(
+    grpcmw.WithTraceKey("x-trace"),
+    grpcmw.WithRequestKey("x-request"),
+)
+grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+```
+
+Downstream logging code can then access these values via context extractors or the built-in key mappings.
 
 ### Async Benchmarks
 

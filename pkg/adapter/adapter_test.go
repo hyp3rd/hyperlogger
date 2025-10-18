@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1234,6 +1235,7 @@ func BenchmarkAdapterLogging(b *testing.B) {
 		name       string
 		enableJSON bool
 		withFields int
+		multi      bool
 	}{
 		{
 			name:       "TextLogging_NoFields",
@@ -1255,13 +1257,24 @@ func BenchmarkAdapterLogging(b *testing.B) {
 			enableJSON: true,
 			withFields: 5,
 		},
+		{
+			name:       "TextLogging_MultiWriter",
+			enableJSON: false,
+			withFields: 2,
+			multi:      true,
+		},
 	}
 
 	for _, bc := range cases {
 		b.Run(bc.name, func(b *testing.B) {
 			buf := &bytes.Buffer{}
+			var outputWriter io.Writer = buf
+			if bc.multi {
+				outputWriter = io.MultiWriter(buf, io.Discard)
+			}
+
 			cfg := hyperlogger.Config{
-				Output:           buf,
+				Output:           outputWriter,
 				EnableJSON:       bc.enableJSON,
 				Level:            hyperlogger.InfoLevel,
 				EnableCaller:     true,
