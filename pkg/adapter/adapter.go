@@ -478,49 +478,43 @@ func (a *Adapter) cloneWithFields(fields []hyperlogger.Field) *Adapter {
 	}
 }
 
-func (a *Adapter) borrowFieldsSnapshot() ([]hyperlogger.Field, *[]hyperlogger.Field) {
+func (a *Adapter) borrowFieldsSnapshot(extra int) ([]hyperlogger.Field, *[]hyperlogger.Field) {
 	baseLen := len(a.fields)
+	desiredCap := baseLen + extra + fieldSnapshotSlack
 
-	pool := a.fieldsPool
-	if pool == nil {
-		cloned := cloneFields(a.fields)
-		storage := &cloned
+	var storage *[]hyperlogger.Field
 
-		return cloned, storage
-	}
-
-	raw := pool.Get()
-
-	var (
-		storage *[]hyperlogger.Field
-		ok      bool
-	)
-
-	if raw == nil {
-		slice := make([]hyperlogger.Field, 0, baseLen+fieldSnapshotSlack)
-		storage = &slice
-	} else {
-		storage, ok = raw.(*[]hyperlogger.Field)
-		if !ok || storage == nil {
-			slice := make([]hyperlogger.Field, 0, baseLen+fieldSnapshotSlack)
-			storage = &slice
+	if pool := a.fieldsPool; pool != nil {
+		if raw := pool.Get(); raw != nil {
+			if candidate, ok := raw.(*[]hyperlogger.Field); ok && candidate != nil {
+				storage = candidate
+			}
 		}
 	}
 
-	fields := *storage
-	if cap(fields) < baseLen {
-		fields = make([]hyperlogger.Field, 0, baseLen+fieldSnapshotSlack)
-	} else {
-		fields = fields[:baseLen]
+	if storage == nil {
+		slice := make([]hyperlogger.Field, 0, desiredCap)
+		storage = &slice
 	}
 
-	copy(fields, a.fields)
+	fields := *storage
+	if cap(fields) < desiredCap {
+		fields = make([]hyperlogger.Field, 0, desiredCap)
+	} else {
+		fields = fields[:0]
+	}
+
+	fields = append(fields, a.fields...)
 	*storage = fields
 
 	return fields, storage
 }
 
 func (a *Adapter) releaseFieldsSnapshot(storage *[]hyperlogger.Field) {
+	if storage == nil {
+		return
+	}
+
 	fields := *storage
 	for i := range fields {
 		fields[i] = hyperlogger.Field{}
@@ -740,18 +734,6 @@ func mergeFieldSets(base []hyperlogger.Field, extras []hyperlogger.Field) []hype
 	return result
 }
 
-func appendFieldsInPlace(fields []hyperlogger.Field, extras []hyperlogger.Field) []hyperlogger.Field {
-	if len(extras) == 0 {
-		return fields
-	}
-
-	for _, extra := range extras {
-		fields = appendOrReplaceInPlace(fields, extra)
-	}
-
-	return fields
-}
-
 // getLevelColor returns the color code for a log level and a boolean
 // indicating whether color should be applied.
 func getLevelColor(level hyperlogger.Level) (output.ColorCode, bool) {
@@ -864,31 +846,6 @@ func normalizeContext(ctx context.Context) context.Context {
 	}
 }
 
-// withContext adds context values to the fields.
-func withContext(ctx context.Context, fields []hyperlogger.Field, cfg *hyperlogger.Config) []hyperlogger.Field {
-	if ctx == nil {
-		return fields
-	}
-
-	var extras []hyperlogger.Field
-
-	extras = extractContextKeys(ctx, extras)
-
-	if global := hyperlogger.GlobalContextExtractors(); len(global) > 0 {
-		extras = append(extras, hyperlogger.ApplyContextExtractors(ctx, global...)...)
-	}
-
-	if cfg != nil {
-		extras = append(extras, hyperlogger.ApplyContextExtractors(ctx, cfg.ContextExtractors...)...)
-	}
-
-	if len(extras) == 0 {
-		return fields
-	}
-
-	return appendFieldsInPlace(fields, extras)
-}
-
 // extractContextKeys extracts known context keys and adds them as fields.
 func extractContextKeys(ctx context.Context, extras []hyperlogger.Field) []hyperlogger.Field {
 	if ctx == nil {
@@ -902,6 +859,24 @@ func extractContextKeys(ctx context.Context, extras []hyperlogger.Field) []hyper
 	}
 
 	return extras
+}
+
+func appendContextFields(ctx context.Context, cfg *hyperlogger.Config, dst []hyperlogger.Field) []hyperlogger.Field {
+	if ctx == nil {
+		return dst
+	}
+
+	dst = extractContextKeys(ctx, dst)
+
+	if globals := hyperlogger.GlobalContextExtractors(); len(globals) > 0 {
+		dst = append(dst, hyperlogger.ApplyContextExtractors(ctx, globals...)...)
+	}
+
+	if cfg != nil {
+		dst = append(dst, hyperlogger.ApplyContextExtractors(ctx, cfg.ContextExtractors...)...)
+	}
+
+	return dst
 }
 
 // attachStackTrace appends a stack trace to the entry when enabled for high-severity logs.
@@ -1340,18 +1315,25 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 		return
 	}
 
-	// Create log entry with cloned base fields to avoid cross-request mutation.
-	baseFields, storage := a.borrowFieldsSnapshot()
+	var extrasBuf [fieldSnapshotSlack]hyperlogger.Field
+
+	extraFields := extrasBuf[:0]
+	extraFields = appendContextFields(a.ctx, a.config, extraFields)
+
+	baseFields, storage := a.borrowFieldsSnapshot(len(extraFields))
 	defer a.releaseFieldsSnapshot(storage)
+
+	entryFields := baseFields
+	if len(extraFields) > 0 {
+		entryFields = append(entryFields, extraFields...)
+		*storage = entryFields
+	}
 
 	entry := &hyperlogger.Entry{
 		Level:   level,
 		Message: msg,
-		Fields:  baseFields,
+		Fields:  entryFields,
 	}
-
-	// Add context values to fields
-	entry.Fields = withContext(a.ctx, entry.Fields, a.config)
 
 	// Attach stack trace for error-level logs when configured
 	a.attachStackTrace(entry)
