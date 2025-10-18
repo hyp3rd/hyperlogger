@@ -35,12 +35,19 @@ PASS
 ok   github.com/hyp3rd/hyperlogger 0.195s
 goos: darwin
 goarch: arm64
-pkg: github.com/hyp3rd/hyperlogger/adapter
-cpu: Apple M3 Pro
-BenchmarkAdapterLogging/TextLogging_NoFields-12           7643400        543.9 ns/op      632 B/op        5 allocs/op
-BenchmarkAdapterLogging/TextLogging_5Fields-12            7104121        565.1 ns/op      805 B/op        5 allocs/op
-BenchmarkAdapterLogging/JSONLogging_NoFields-12           5894107        675.6 ns/op      978 B/op        8 allocs/op
-BenchmarkAdapterLogging/JSONLogging_5Fields-12            4864885        803.1 ns/op     1314 B/op        8 allocs/op
+pkg: github.com/hyp3rd/hyperlogger/pkg/adapter
+cpu: Apple M2 Pro
+BenchmarkAdapterLogging/TextLogging_NoFields-12             4379250         804.9 ns/op         597 B/op            5 allocs/op
+BenchmarkAdapterLogging/TextLogging_5Fields-12              4343899         897.8 ns/op         722 B/op            5 allocs/op
+BenchmarkAdapterLogging/JSONLogging_NoFields-12             3996409         890.4 ns/op         859 B/op            6 allocs/op
+BenchmarkAdapterLogging/JSONLogging_5Fields-12              3378655        1085.0 ns/op        1091 B/op            6 allocs/op
+BenchmarkAdapterLogging/TextLogging_MultiWriter-12          4484455         811.8 ns/op         651 B/op            5 allocs/op
+PASS
+
+BenchmarkAsyncWriter/drop_newest-12             194167740            18.48 ns/op            24 B/op         1 allocs/op
+BenchmarkAsyncWriter/drop_oldest-12              74881224            49.95 ns/op            24 B/op         1 allocs/op
+BenchmarkAsyncWriter/block-12                       14628           245278 ns/op           166 B/op         2 allocs/op
+BenchmarkAsyncWriter/handoff-12                     29034           124309 ns/op           180 B/op         2 allocs/op
 PASS
 ```
 
