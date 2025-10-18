@@ -58,9 +58,12 @@ package main
 import (
     "context"
     "fmt"
+    "net/http"
     "os"
-    "github.com/hyp3rd/hyperlogger"
+
+    logger "github.com/hyp3rd/hyperlogger"
     "github.com/hyp3rd/hyperlogger/adapter"
+    "github.com/hyp3rd/hyperlogger/internal/constants"
 )
 
 func main() {
@@ -89,6 +92,18 @@ func main() {
     if err != nil {
         log.WithError(err).Error("Something went wrong")
     }
+
+    logger.RegisterContextExtractor(func(ctx context.Context) []logger.Field {
+        if reqID, ok := ctx.Value(constants.RequestKey{}).(string); ok && reqID != "" {
+            return []logger.Field{{Key: "request_id", Value: reqID}}
+        }
+
+        return nil
+    })
+
+    exporter := logger.NewAsyncMetricsExporter()
+    logger.RegisterAsyncMetricsHandler(exporter.Observe)
+    http.Handle("/metrics", exporter)
 }
 ```
 
@@ -386,19 +401,29 @@ The AsyncWriter implementation provides:
 - Proper cleanup with the `Sync()` method
 - Configurable buffer size and timeout
 - Error handling for failed write operations
-- Multiple overflow strategies (`drop_newest`, `block`, `drop_oldest`, `handoff`)
-- Metrics callbacks that surface queue depth, drop counts, and synchronous bypasses
+- Multiple overflow strategies (`drop_newest`, `drop_oldest`, `block`, `handoff`)
+- Metrics callbacks that surface queue depth, drop counts, synchronous bypasses, and write failures
 
 ```go
 log, err := adapter.NewAdapter(*logger.NewConfigBuilder().
     WithConsoleOutput().
     WithAsyncLogging(true, 1024).
     WithAsyncOverflowStrategy(logger.AsyncOverflowHandoff).
-    WithAsyncMetricsHandler(func(ctx context.Context, metrics logger.AsyncMetrics) {
-        asyncDrops.Add(float64(metrics.Dropped))
-    }).
+    WithAsyncMetricsHandler(exporter.Observe).
     Build())
 ```
+
+#### Async Metrics Exporter
+
+Expose async writer health metrics via a Prometheus-style endpoint:
+
+```go
+exporter := logger.NewAsyncMetricsExporter()
+logger.RegisterAsyncMetricsHandler(exporter.Observe)
+http.Handle("/metrics", exporter)
+```
+
+This exporter tracks enqueued, processed, dropped, retried, and bypassed logs as well as the current queue depth.
 
 ### Log Sampling
 
@@ -415,7 +440,17 @@ b := logger.NewConfigBuilder().
 log, err := adapter.NewAdapter(*b.Build())
 ```
 
-Per-level sampling rules allow you to keep stack traces for specific levels while aggressively sampling noisy ones.
+Per-level sampling rules keep critical log levels verbosely while aggressively sampling noisy ones.
+
+### Async Benchmarks
+
+Evaluate how overflow strategies behave under sustained load:
+
+```bash
+go test -bench BenchmarkAsyncWriter -benchmem ./internal/output
+```
+
+This benchmark introduces artificial back-pressure to surface throughput differences between the drop, block, and handoff strategies.
 
 ### Enhanced File Management
 
