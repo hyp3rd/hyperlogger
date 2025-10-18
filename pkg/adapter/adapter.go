@@ -57,7 +57,11 @@ const (
 	asciiControlEnd   = 126 // End of ASCII printable characters (~)
 )
 
-const fieldSnapshotSlack = 4 // Extra capacity to reduce frequent reallocations
+const (
+	fieldSnapshotSlack      = 4 // Extra capacity to reduce frequent reallocations
+	callerInfoExtraCapacity = 16
+	lineNumberBase          = 10
+)
 
 var (
 	// ErrNoFilePathSet indicates that the file path is not set for file output.
@@ -140,8 +144,7 @@ type Adapter struct {
 
 	// Unified buffer pool system
 	bufferPool []*bufferPoolBucket
-
-	fieldsPool sync.Pool
+	fieldsPool *sync.Pool
 }
 
 // NewAdapter creates a new logger adapter with the given configuration.
@@ -173,7 +176,7 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 		encoder:      enc,
 	}
 
-	adapter.fieldsPool = sync.Pool{
+	adapter.fieldsPool = &sync.Pool{
 		New: func() any {
 			slice := make([]hyperlogger.Field, 0, len(adapter.fields)+fieldSnapshotSlack)
 
@@ -326,7 +329,13 @@ func (a *Adapter) WithContext(ctx context.Context) hyperlogger.Logger {
 
 // WithField adds a field to the hyperlogger.
 func (a *Adapter) WithField(key string, value any) hyperlogger.Logger {
-	return a.WithFields(hyperlogger.Field{Key: key, Value: value})
+	if key == "" {
+		return a
+	}
+
+	updated := appendOrReplaceField(a.fields, hyperlogger.Field{Key: key, Value: value})
+
+	return a.cloneWithFields(updated)
 }
 
 // WithFields adds fields to the hyperlogger.
@@ -335,19 +344,9 @@ func (a *Adapter) WithFields(fields ...hyperlogger.Field) hyperlogger.Logger {
 		return a
 	}
 
-	// Create a new adapter with the same config but merged fields
-	newAdapter := &Adapter{
-		config:       a.config,
-		level:        a.level,
-		fields:       mergeFields(a.fields, fields),
-		hookRegistry: a.hookRegistry,
-		ctx:          a.ctx,
-		bufferPool:   a.bufferPool,
-		sampler:      a.sampler,
-		encoder:      a.encoder,
-	}
+	merged := mergeFieldSets(a.fields, fields)
 
-	return newAdapter
+	return a.cloneWithFields(merged)
 }
 
 // WithError adds an error field to the hyperlogger.
@@ -462,9 +461,32 @@ func cloneFields(fields []hyperlogger.Field) []hyperlogger.Field {
 	return cloned
 }
 
+func (a *Adapter) cloneWithFields(fields []hyperlogger.Field) *Adapter {
+	return &Adapter{
+		config:       a.config,
+		hookRegistry: a.hookRegistry,
+		level:        a.level,
+		ctx:          a.ctx,
+		fields:       fields,
+		sampler:      a.sampler,
+		encoder:      a.encoder,
+		bufferPool:   a.bufferPool,
+		fieldsPool:   a.fieldsPool,
+	}
+}
+
 func (a *Adapter) borrowFieldsSnapshot() ([]hyperlogger.Field, *[]hyperlogger.Field) {
 	baseLen := len(a.fields)
-	raw := a.fieldsPool.Get()
+
+	pool := a.fieldsPool
+	if pool == nil {
+		cloned := cloneFields(a.fields)
+		storage := &cloned
+
+		return cloned, storage
+	}
+
+	raw := pool.Get()
 
 	var (
 		storage *[]hyperlogger.Field
@@ -472,18 +494,19 @@ func (a *Adapter) borrowFieldsSnapshot() ([]hyperlogger.Field, *[]hyperlogger.Fi
 	)
 
 	if raw == nil {
-		slice := make([]hyperlogger.Field, 0, baseLen)
+		slice := make([]hyperlogger.Field, 0, baseLen+fieldSnapshotSlack)
 		storage = &slice
 	} else {
 		storage, ok = raw.(*[]hyperlogger.Field)
-		if !ok {
-			storage = &[]hyperlogger.Field{}
+		if !ok || storage == nil {
+			slice := make([]hyperlogger.Field, 0, baseLen+fieldSnapshotSlack)
+			storage = &slice
 		}
 	}
 
 	fields := *storage
 	if cap(fields) < baseLen {
-		fields = make([]hyperlogger.Field, baseLen)
+		fields = make([]hyperlogger.Field, 0, baseLen+fieldSnapshotSlack)
 	} else {
 		fields = fields[:baseLen]
 	}
@@ -502,7 +525,10 @@ func (a *Adapter) releaseFieldsSnapshot(storage *[]hyperlogger.Field) {
 
 	fields = fields[:0]
 	*storage = fields
-	a.fieldsPool.Put(storage)
+
+	if pool := a.fieldsPool; pool != nil {
+		pool.Put(storage)
+	}
 }
 
 func prepareOutput(config *hyperlogger.Config) error {
@@ -675,6 +701,53 @@ func toAsyncMetrics(metrics output.AsyncMetrics) hyperlogger.AsyncMetrics {
 	}
 }
 
+func appendOrReplaceField(base []hyperlogger.Field, field hyperlogger.Field) []hyperlogger.Field {
+	if len(base) == 0 {
+		return []hyperlogger.Field{field}
+	}
+
+	result := make([]hyperlogger.Field, len(base), len(base)+1)
+	copy(result, base)
+
+	for i := range result {
+		if result[i].Key == field.Key {
+			result[i].Value = field.Value
+
+			return result
+		}
+	}
+
+	return append(result, field)
+}
+
+func mergeFieldSets(base []hyperlogger.Field, extras []hyperlogger.Field) []hyperlogger.Field {
+	if len(base) == 0 {
+		return cloneFields(extras)
+	}
+
+	result := make([]hyperlogger.Field, len(base), len(base)+len(extras))
+	copy(result, base)
+
+	for _, extra := range extras {
+		replaced := false
+
+		for i := range result {
+			if result[i].Key == extra.Key {
+				result[i].Value = extra.Value
+				replaced = true
+
+				break
+			}
+		}
+
+		if !replaced {
+			result = append(result, extra)
+		}
+	}
+
+	return result
+}
+
 // mergeFields combines multiple field slices into a single slice, avoiding duplicates.
 // Fields from later slices override those from earlier ones if they have the same key.
 func mergeFields(fields ...[]hyperlogger.Field) []hyperlogger.Field {
@@ -682,28 +755,13 @@ func mergeFields(fields ...[]hyperlogger.Field) []hyperlogger.Field {
 		return nil
 	}
 
-	// Count total capacity needed
-	totalCap := 0
-	for _, fs := range fields {
-		totalCap += len(fs)
-	}
-
-	// Create map to track field keys for de-duplication
-	seen := make(map[string]int, totalCap)
-	result := make([]hyperlogger.Field, 0, totalCap)
-
-	// Merge all field slices
-	for _, fs := range fields {
-		for _, field := range fs {
-			if idx, exists := seen[field.Key]; exists {
-				// Update existing field
-				result[idx].Value = field.Value
-			} else {
-				// Add new field
-				seen[field.Key] = len(result)
-				result = append(result, field)
-			}
+	result := cloneFields(fields[0])
+	for _, set := range fields[1:] {
+		if len(set) == 0 {
+			continue
 		}
+
+		result = mergeFieldSets(result, set)
 	}
 
 	return result
@@ -802,7 +860,14 @@ func formatCallerInfo(file string, line int, funcName string, shortPath bool) st
 		file = filepath.Base(file)
 	}
 
-	return fmt.Sprintf("%s:%d %s", file, line, funcName)
+	buf := make([]byte, 0, len(file)+len(funcName)+callerInfoExtraCapacity)
+	buf = append(buf, file...)
+	buf = append(buf, ':')
+	buf = strconv.AppendInt(buf, int64(line), lineNumberBase)
+	buf = append(buf, ' ')
+	buf = append(buf, funcName...)
+
+	return string(buf)
 }
 
 func normalizeContext(ctx context.Context) context.Context {

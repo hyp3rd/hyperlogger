@@ -2,7 +2,7 @@
 
 Zero‑alloc hot path
 
-Revisit WithFields/levels chaining: cache immutable field slices per adapter and reuse them via pooling (sync.Pool of []Field), so every .WithFields doesn’t allocate a new slice when depth is small. **(Adapter fields now pooled on snapshots; further work needed for merged context fields.)**
+Revisit WithFields/levels chaining: cache immutable field slices per adapter and reuse them via pooling (sync.Pool of []Field), so every .WithFields doesn’t allocate a new slice when depth is small. **(Adapter now pools log snapshots and avoids map-based merges; remaining work: reduce context merge allocations.)**
 Inline frequently used typed field helpers in adapter (e.g., WithError, WithField) to leverage stack allocation and avoid interface conversions.
 Optimize fmt.Sprintf usage inside logging: replace with pre-sized bytes.Buffer or strconv.Append* helpers for level/formatting to keep per-log allocations at ≤2.
 Encoder buffering
