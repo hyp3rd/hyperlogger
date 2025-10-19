@@ -150,6 +150,9 @@ type Adapter struct {
 	// Unified buffer pool system
 	bufferPool []*bufferPoolBucket
 	fieldsPool *sync.Pool
+
+	consoleEncoderPool *sync.Pool
+	jsonEncoderPool    *sync.Pool
 }
 
 // NewAdapter creates a new logger adapter with the given configuration.
@@ -181,6 +184,18 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 		encoder:      enc,
 	}
 
+	adapter.consoleEncoderPool = &sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, consoleBaseSize))
+		},
+	}
+
+	adapter.jsonEncoderPool = &sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, jsonBaseSize))
+		},
+	}
+
 	adapter.fieldsPool = &sync.Pool{
 		New: func() any {
 			slice := make([]hyperlogger.Field, 0, len(adapter.fields)+fieldSnapshotSlack)
@@ -198,32 +213,13 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 
 	// Wrap output in AsyncWriter if async logging is enabled
 	if config.EnableAsync {
-		asyncConfig := output.AsyncConfig{
-			BufferSize:         config.AsyncBufferSize,
-			WaitTimeout:        constants.DefaultTimeout,
-			ErrorHandler:       func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
-			OverflowStrategy:   convertOverflowStrategy(config.AsyncOverflowStrategy),
-			DropHandler:        config.AsyncDropHandler,
-			DropPayloadHandler: config.AsyncDropPayloadHandler,
-			MetricsReporter: func(metrics output.AsyncMetrics) {
-				mapped := toAsyncMetrics(metrics)
-				if config.AsyncMetricsHandler != nil {
-					config.AsyncMetricsHandler(normalizedCtx, mapped)
-				}
-
-				hyperlogger.EmitAsyncMetrics(normalizedCtx, mapped)
-			},
-		}
-
-		adapter.config.Output = output.NewAsyncWriter(config.Output, asyncConfig)
+		adapter.setAsyncOutput(normalizedCtx, &config)
 	}
 
 	// Register hooks from config
-	for _, hookConfig := range config.Hooks {
-		err := adapter.hookRegistry.AddHook(hookConfig.Name, hookConfig.Hook)
-		if err != nil {
-			return nil, ewrap.Wrapf(err, "failed to register hook '%s'", hookConfig.Name)
-		}
+	err = adapter.registerHooks(config.Hooks)
+	if err != nil {
+		return nil, err
 	}
 
 	return adapter, nil
@@ -410,6 +406,40 @@ func validateConfig(config *hyperlogger.Config) error {
 	}
 
 	return nil
+}
+
+// registerHooks registers hooks from the configuration into the adapter's hook registry.
+func (a *Adapter) registerHooks(hooksConfig []hyperlogger.HookConfig) error {
+	for _, hookConfig := range hooksConfig {
+		err := a.hookRegistry.AddHook(hookConfig.Name, hookConfig.Hook)
+		if err != nil {
+			return ewrap.Wrapf(err, "failed to register hook '%s'", hookConfig.Name)
+		}
+	}
+
+	return nil
+}
+
+// setAsyncOutput configures the adapter to use an AsyncWriter for log output.
+func (a *Adapter) setAsyncOutput(ctx context.Context, config *hyperlogger.Config) {
+	asyncConfig := output.AsyncConfig{
+		BufferSize:         config.AsyncBufferSize,
+		WaitTimeout:        constants.DefaultTimeout,
+		ErrorHandler:       func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
+		OverflowStrategy:   convertOverflowStrategy(config.AsyncOverflowStrategy),
+		DropHandler:        config.AsyncDropHandler,
+		DropPayloadHandler: config.AsyncDropPayloadHandler,
+		MetricsReporter: func(metrics output.AsyncMetrics) {
+			mapped := toAsyncMetrics(metrics)
+			if config.AsyncMetricsHandler != nil {
+				config.AsyncMetricsHandler(ctx, mapped)
+			}
+
+			hyperlogger.EmitAsyncMetrics(ctx, mapped)
+		},
+	}
+
+	a.config.Output = output.NewAsyncWriter(config.Output, asyncConfig)
 }
 
 func enforceColorPolicy(config *hyperlogger.Config) {
@@ -1281,33 +1311,79 @@ func formatJSONOutput(builder *bytes.Buffer, entry *hyperlogger.Entry, config *h
 	builder.WriteString("}\n")
 }
 
-func (a *Adapter) encodeEntry(entry *hyperlogger.Entry) ([]byte, *bytes.Buffer, error) {
+// encodeEntry encodes a log entry using the configured encoder.
+//
+//nolint:revive // multiple return values are necessary here.
+func (a *Adapter) encodeEntry(entry *hyperlogger.Entry) ([]byte, *bytes.Buffer, bool, error) {
 	if entry == nil {
-		return nil, nil, ewrap.New("entry cannot be nil")
+		return nil, nil, false, ewrap.New("entry cannot be nil")
 	}
 
 	if a.encoder == nil {
-		return nil, nil, ewrap.Wrap(ErrEncoderNotFound, "no encoder configured")
+		return nil, nil, false, ewrap.Wrap(ErrEncoderNotFound, "no encoder configured")
+	}
+
+	isJSON := a.config != nil && a.config.EnableJSON
+	buf, pooled := a.borrowEncoderBuffer(entry, isJSON)
+
+	data, err := a.encoder.Encode(entry, a.config, buf)
+	if err != nil {
+		a.releaseEncoderBuffer(buf, isJSON, pooled)
+
+		return nil, nil, false, err
+	}
+
+	return data, buf, pooled, nil
+}
+
+func (a *Adapter) borrowEncoderBuffer(entry *hyperlogger.Entry, isJSON bool) (*bytes.Buffer, bool) {
+	pool := a.consoleEncoderPool
+	if isJSON {
+		pool = a.jsonEncoderPool
 	}
 
 	size := a.encoder.EstimateSize(entry)
 	if size <= 0 {
-		size = predictBufferSize(a.config != nil && a.config.EnableJSON, len(entry.Message), len(entry.Fields))
+		size = predictBufferSize(isJSON, len(entry.Message), len(entry.Fields))
+	}
+	//nolint:nestif // breaking it down further would reduce readability.
+	if pool != nil {
+		if candidate := pool.Get(); candidate != nil {
+			if buf, ok := candidate.(*bytes.Buffer); ok && buf != nil {
+				if buf.Cap() >= size {
+					buf.Reset()
+
+					return buf, true
+				}
+
+				a.recycleEncoderBuffer(buf, isJSON)
+			}
+		}
 	}
 
 	buf := a.getBuffer(size)
+	buf.Reset()
 
-	data, err := a.encoder.Encode(entry, a.config, buf)
-	if err != nil {
-		a.returnBuffer(buf)
+	return buf, false
+}
 
-		return nil, nil, err
+func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON bool, pooled bool) {
+	if buf == nil {
+		return
 	}
 
-	return data, buf, nil
+	if pooled {
+		a.recycleEncoderBuffer(buf, isJSON)
+
+		return
+	}
+
+	a.returnBuffer(buf)
 }
 
 // log handles the common logging logic for all log levels.
+//
+//nolint:cyclop // complexity is acceptable for this core function. Splitting may reduce readability.
 func (a *Adapter) log(level hyperlogger.Level, msg string) {
 	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
 	if level < hyperlogger.Level(a.level.Load()) {
@@ -1347,9 +1423,10 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 	}
 
 	// Format and write the log entry
-	encoded, buf, err := a.encodeEntry(entry)
+	encoded, buf, pooled, err := a.encodeEntry(entry)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to encode log entry: %v\n", err)
+		a.recycleEncoderBuffer(buf, a.config != nil && a.config.EnableJSON)
 
 		return
 	}
@@ -1369,7 +1446,7 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 		fmt.Fprintf(os.Stderr, "Failed to write log: %v\n", err)
 	}
 
-	a.returnBuffer(buf)
+	a.releaseEncoderBuffer(buf, a.config != nil && a.config.EnableJSON, pooled)
 
 	// If this is a fatal log, exit the program
 	if level == hyperlogger.FatalLevel {
@@ -1419,7 +1496,7 @@ func (a *Adapter) logHookError(err error) {
 		Fields:  nil,
 	}
 
-	encoded, errBuf, encodeErr := a.encodeEntry(errEntry)
+	encoded, errBuf, pooled, encodeErr := a.encodeEntry(errEntry)
 	if encodeErr != nil {
 		fmt.Fprintf(os.Stderr, "Failed to encode hook error: %v\n", encodeErr)
 
@@ -1432,7 +1509,7 @@ func (a *Adapter) logHookError(err error) {
 		fmt.Fprintf(os.Stderr, "Failed to write error log: %v\n", writeErr)
 	}
 
-	a.returnBuffer(errBuf)
+	a.releaseEncoderBuffer(errBuf, a.config != nil && a.config.EnableJSON, pooled)
 }
 
 // predictBufferSize calculates a more accurate buffer size based on content.
@@ -1468,6 +1545,28 @@ func nextPowerOfTwo(val int) int {
 	val++
 
 	return val
+}
+
+func (a *Adapter) recycleEncoderBuffer(buf *bytes.Buffer, isJSON bool) {
+	if buf == nil {
+		return
+	}
+
+	if isJSON {
+		if pool := a.jsonEncoderPool; pool != nil {
+			pool.Put(buf)
+
+			return
+		}
+	}
+
+	if pool := a.consoleEncoderPool; pool != nil {
+		pool.Put(buf)
+
+		return
+	}
+
+	a.returnBuffer(buf)
 }
 
 func appendIntJSON(buf *bytes.Buffer, value int64) {

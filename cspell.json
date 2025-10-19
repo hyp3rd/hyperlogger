@@ -72,6 +72,7 @@
         "memprofile",
         "mvdan",
         "mypy",
+        "nestif",
         "Newf",
         "noinline",
         "nolint",

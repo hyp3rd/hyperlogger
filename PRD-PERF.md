@@ -7,7 +7,7 @@ Inline frequently used typed field helpers in adapter (e.g., WithError, WithFiel
 Optimize fmt.Sprintf usage inside logging: replace with pre-sized bytes.Buffer or strconv.Append* helpers for level/formatting to keep per-log allocations at ≤2. **(Caller formatting and primitive value formatting now use strconv; remaining fmt usage isolated to complex/default cases.)**
 Encoder buffering
 
-Introduce reusable encoder buffers per goroutine (e.g., a small sync.Pool keyed by enableJSON). Each log currently grabs a new bytes.Buffer; pooling reduces B/op and alloc count noticeably.
+Introduce reusable encoder buffers per goroutine (e.g., a small sync.Pool keyed by enableJSON). Each log currently grabs a new bytes.Buffer; pooling reduces B/op and alloc count noticeably. **(Adapter now borrows encoder buffers from per-format pools before encoding and returns them afterward.)**
 For JSON encoding, switch to json.Encoder alternatives or handcrafted append-based encoding to avoid temporary strings. **(Value formatter now appends ints/floats directly into buffers via strconv.Append*, eliminating intermediate strings.)**
 Async writer
 
