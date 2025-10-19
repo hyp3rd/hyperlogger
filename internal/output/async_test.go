@@ -35,10 +35,12 @@ func (m *mockWriter) Write(p []byte) (int, error) {
 	delay := m.writeDelay
 	persistentErr := m.writeError
 	transientErr := m.transientError
+
 	failures := m.failuresBeforeSuccess
 	if failures > 0 {
 		m.failuresBeforeSuccess--
 	}
+
 	m.mu.Unlock()
 
 	if delay > 0 {
@@ -140,6 +142,7 @@ func TestNewAsyncWriter(t *testing.T) {
 		}
 
 		time.Sleep(250 * time.Millisecond)
+
 		_ = async.Flush()
 
 		data := writer.getWrittenData()
@@ -164,6 +167,7 @@ func TestNewAsyncWriter(t *testing.T) {
 		}
 
 		time.Sleep(250 * time.Millisecond)
+
 		_ = async.Flush()
 
 		written := writer.getWrittenData()
@@ -261,9 +265,11 @@ func TestAsyncWriter_Write(t *testing.T) {
 			if errors.Is(err, ErrBufferFull) {
 				break
 			}
+
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
+
 			time.Sleep(10 * time.Millisecond)
 		}
 
@@ -306,6 +312,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 			if _, err := async.Write([]byte("second")); err != nil {
 				t.Fatalf("second write should succeed with drop oldest, got %v", err)
 			}
+
 			time.Sleep(10 * time.Millisecond)
 		}
 
@@ -316,6 +323,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 		writer.mu.Lock()
 		writer.writeDelay = 0
 		writer.mu.Unlock()
+
 		_ = async.Flush()
 
 		written := writer.getWrittenData()
@@ -339,6 +347,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 		}
 
 		done := make(chan error, 1)
+
 		go func() {
 			_, err := async.Write([]byte("second"))
 			done <- err
@@ -352,6 +361,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 		}
 
 		time.Sleep(150 * time.Millisecond)
+
 		_ = async.Flush()
 
 		written := writer.getWrittenData()
@@ -379,6 +389,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 		}
 
 		time.Sleep(250 * time.Millisecond)
+
 		_ = async.Flush()
 
 		written := writer.getWrittenData()
@@ -403,6 +414,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 		}
 
 		time.Sleep(250 * time.Millisecond)
+
 		_ = async.Flush()
 
 		written := writer.getWrittenData()
@@ -428,6 +440,7 @@ func TestAsyncWriter_ReusesPayloadBuffers(t *testing.T) {
 	async.payloadPool = &sync.Pool{
 		New: func() any {
 			newCount.Add(1)
+
 			buf := make([]byte, 0, 64)
 
 			return &buf
@@ -488,6 +501,7 @@ func TestAsyncWriter_DropPayloadRetention(t *testing.T) {
 		if errors.Is(err, ErrBufferFull) {
 			break
 		}
+
 		require.NoError(t, err)
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -535,6 +549,7 @@ func TestAsyncWriter_DropPayloadAutoRelease(t *testing.T) {
 		if errors.Is(err, ErrBufferFull) {
 			break
 		}
+
 		require.NoError(t, err)
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -558,6 +573,7 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 	writer.writeDelay = 750 * time.Millisecond
 
 	var reported atomic.Pointer[AsyncMetrics]
+
 	async := NewAsyncWriter(writer, AsyncConfig{
 		BufferSize:       1,
 		OverflowStrategy: AsyncOverflowDropNewest,
@@ -572,11 +588,13 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 	require.NoError(t, err)
 
 	var overflow bool
+
 	deadline := time.Now().Add(2 * time.Second)
 	for !overflow && time.Now().Before(deadline) {
 		_, err = async.Write([]byte("second"))
 		if err == nil {
 			time.Sleep(10 * time.Millisecond)
+
 			continue
 		}
 

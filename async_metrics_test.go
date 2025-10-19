@@ -10,6 +10,7 @@ func TestRegisterAsyncMetricsHandler(t *testing.T) {
 	t.Cleanup(ClearAsyncMetricsHandlers)
 
 	called := false
+
 	RegisterAsyncMetricsHandler(func(ctx context.Context, metrics AsyncMetrics) {
 		called = true
 	})

@@ -19,7 +19,7 @@ io.MultiWriter (and our custom multi writer) adds allocations when wrapping simp
 For WithAsyncMetricsHandler, current wrapper builds AsyncMetrics snapshots each time; consider reusing struct or passing pointer to reduce copying. **(Handler already receives a stack-allocated value copy with no heap churn; no further changes required.)**
 Benchmark-driven fine tuning
 
-Add micro-benchmarks around WithFields, JSON encoding, and async bypass path to isolate allocation sources. Optimize until go test -bench BenchmarkAdapterLogging -benchmem shows ≤2 allocs for the “NoFields” case.
+Add micro-benchmarks around WithFields, JSON encoding, and async bypass path to isolate allocation sources. Optimize until go test -bench BenchmarkAdapterLogging -benchmem shows ≤2 allocs for the “NoFields” case. **(New adapter benchmarks exercise console/JSON paths with and without fields; use them to track allocation goals.)**
 Run pprof heap profiles during benchmarks to confirm culprit allocations; use -alloc_space focus filters.
 Compiler guidance
 

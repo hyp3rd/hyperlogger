@@ -197,6 +197,7 @@ func TestWithAsyncDropPayloadHandler(t *testing.T) {
 	called := false
 	handler := func(payload DropPayload) {
 		called = true
+
 		if payload.Size() == 0 {
 			t.Error("expected payload to have data")
 		}
@@ -226,6 +227,7 @@ func TestWithAsyncMetricsHandler(t *testing.T) {
 	}
 
 	config.AsyncMetricsHandler(context.Background(), AsyncMetrics{})
+
 	if !called {
 		t.Fatal("expected handler to be invoked")
 	}
@@ -233,10 +235,12 @@ func TestWithAsyncMetricsHandler(t *testing.T) {
 
 func TestWithContextExtractor(t *testing.T) {
 	var saw bool
+
 	type ctxKey struct{}
 
 	extractor := func(ctx context.Context) []Field {
 		saw = true
+
 		if val, ok := ctx.Value(ctxKey{}).(string); ok && val != "" {
 			return []Field{{Key: "example", Value: val}}
 		}
@@ -251,6 +255,7 @@ func TestWithContextExtractor(t *testing.T) {
 	}
 
 	ctx := context.WithValue(context.Background(), ctxKey{}, "value")
+
 	fields := config.ContextExtractors[0](ctx)
 	if !saw || len(fields) != 1 || fields[0].Value != "value" {
 		t.Fatalf("context extractor not invoked correctly: %+v", fields)

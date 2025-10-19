@@ -67,6 +67,7 @@ func TestLogSamplerPerLevel(t *testing.T) {
 	if !sampler.Allow(hyperlogger.TraceLevel) {
 		t.Fatalf("expected first trace to pass")
 	}
+
 	if sampler.Allow(hyperlogger.TraceLevel) {
 		t.Fatalf("expected second trace to be sampled")
 	}
@@ -101,7 +102,7 @@ func TestLogSamplerRules(t *testing.T) {
 	}
 
 	// Trace should bypass sampling entirely due to disabled rule.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if !sampler.Allow(hyperlogger.TraceLevel) {
 			t.Fatalf("expected trace level to bypass sampling")
 		}
@@ -111,9 +112,11 @@ func TestLogSamplerRules(t *testing.T) {
 	if !sampler.Allow(hyperlogger.DebugLevel) {
 		t.Fatalf("expected first debug to pass")
 	}
+
 	if !sampler.Allow(hyperlogger.DebugLevel) {
 		t.Fatalf("expected second debug to pass (initial=2)")
 	}
+
 	if sampler.Allow(hyperlogger.DebugLevel) {
 		t.Fatalf("expected third debug to be sampled")
 	}
@@ -122,6 +125,7 @@ func TestLogSamplerRules(t *testing.T) {
 	if !sampler.Allow(hyperlogger.InfoLevel) {
 		t.Fatalf("expected first info to pass")
 	}
+
 	if sampler.Allow(hyperlogger.InfoLevel) {
 		t.Fatalf("expected subsequent info to follow default cadence")
 	}
@@ -139,19 +143,21 @@ func TestLogSamplerConcurrency(t *testing.T) {
 		t.Fatal("expected sampler to be created")
 	}
 
-	const goroutines = 8
-	const iterations = 1000
+	const (
+		goroutines = 8
+		iterations = 1000
+	)
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
 	var allowed int32
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				if sampler.Allow(hyperlogger.InfoLevel) {
 					atomic.AddInt32(&allowed, 1)
 				}
