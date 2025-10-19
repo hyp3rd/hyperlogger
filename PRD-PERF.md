@@ -15,8 +15,8 @@ Current bypass path copies payload (make([]byte, len(data))). Replace with buffe
 Drop handler currently copies into new slice; allow handler to signal “already copied” or provide a pre-allocated scratch to minimize duplicates. **(Advanced drop handlers can now retain pooled payloads via leases and release them when finished, avoiding duplicate copying.)**
 Multi-writer path
 
-io.MultiWriter (and our custom multi writer) adds allocations when wrapping simple buffers. Introduce a lightweight dualWriter for common two-sink cases to keep 0 alloc.
-For WithAsyncMetricsHandler, current wrapper builds AsyncMetrics snapshots each time; consider reusing struct or passing pointer to reduce copying.
+io.MultiWriter (and our custom multi writer) adds allocations when wrapping simple buffers. Introduce a lightweight dualWriter for common two-sink cases to keep 0 alloc. **(MultiWriter now fast-paths the two-writer case, writing inline without extra slice allocations.)**
+For WithAsyncMetricsHandler, current wrapper builds AsyncMetrics snapshots each time; consider reusing struct or passing pointer to reduce copying. **(Handler already receives a stack-allocated value copy with no heap churn; no further changes required.)**
 Benchmark-driven fine tuning
 
 Add micro-benchmarks around WithFields, JSON encoding, and async bypass path to isolate allocation sources. Optimize until go test -bench BenchmarkAdapterLogging -benchmem shows ≤2 allocs for the “NoFields” case.

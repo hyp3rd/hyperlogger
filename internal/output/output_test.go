@@ -164,6 +164,9 @@ func TestMultiWriter_WriteToWriters(t *testing.T) {
 
 	multi, err := NewMultiWriter(writer1, writer2)
 	require.NoError(t, err)
+	assert.True(t, multi.useDual)
+	assert.Equal(t, writer1, multi.first)
+	assert.Equal(t, writer2, multi.second)
 
 	testData := []byte("test message\n")
 	n, err := multi.Write(testData)
@@ -180,6 +183,7 @@ func TestMultiWriter_AddRemoveWriter(t *testing.T) {
 
 	multi, err := NewMultiWriter(writer)
 	require.NoError(t, err)
+	assert.False(t, multi.useDual)
 
 	newBuf := &bytes.Buffer{}
 	newWriter := NewConsoleWriter(newBuf, ColorModeNever)
@@ -187,9 +191,13 @@ func TestMultiWriter_AddRemoveWriter(t *testing.T) {
 	err = multi.AddWriter(newWriter)
 	assert.NoError(t, err)
 	assert.Len(t, multi.Writers, 2)
+	assert.True(t, multi.useDual)
+	assert.Equal(t, writer, multi.first)
+	assert.Equal(t, newWriter, multi.second)
 
 	multi.RemoveWriter(writer)
 	assert.Len(t, multi.Writers, 1)
+	assert.False(t, multi.useDual)
 
 	testData := []byte("test message\n")
 	_, err = multi.Write(testData)
