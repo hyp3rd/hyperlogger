@@ -193,6 +193,28 @@ func TestWithAsyncDropHandler(t *testing.T) {
 	}
 }
 
+func TestWithAsyncDropPayloadHandler(t *testing.T) {
+	called := false
+	handler := func(payload DropPayload) {
+		called = true
+		if payload.Size() == 0 {
+			t.Error("expected payload to have data")
+		}
+	}
+
+	config := NewConfigBuilder().WithAsyncDropPayloadHandler(handler).Build()
+
+	if config.AsyncDropPayloadHandler == nil {
+		t.Fatal("expected drop payload handler to be set")
+	}
+
+	config.AsyncDropPayloadHandler(&mockDropPayload{data: []byte("payload")})
+
+	if !called {
+		t.Error("expected drop payload handler to be invoked")
+	}
+}
+
 func TestWithAsyncMetricsHandler(t *testing.T) {
 	called := false
 	config := NewConfigBuilder().WithAsyncMetricsHandler(func(ctx context.Context, metrics AsyncMetrics) {
@@ -508,3 +530,33 @@ func TestChaining(t *testing.T) {
 		t.Error("Chained WithCaller did not work")
 	}
 }
+
+type mockDropPayload struct {
+	data []byte
+}
+
+func (m *mockDropPayload) Bytes() []byte {
+	return m.data
+}
+
+func (m *mockDropPayload) Size() int {
+	return len(m.data)
+}
+
+func (m *mockDropPayload) AppendTo(dst []byte) []byte {
+	return append(dst, m.data...)
+}
+
+func (m *mockDropPayload) Retain() PayloadLease {
+	return &noopLease{data: m.data}
+}
+
+type noopLease struct {
+	data []byte
+}
+
+func (n *noopLease) Bytes() []byte {
+	return n.data
+}
+
+func (n *noopLease) Release() {}

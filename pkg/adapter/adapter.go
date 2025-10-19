@@ -197,11 +197,12 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 	// Wrap output in AsyncWriter if async logging is enabled
 	if config.EnableAsync {
 		asyncConfig := output.AsyncConfig{
-			BufferSize:       config.AsyncBufferSize,
-			WaitTimeout:      constants.DefaultTimeout,
-			ErrorHandler:     func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
-			OverflowStrategy: convertOverflowStrategy(config.AsyncOverflowStrategy),
-			DropHandler:      config.AsyncDropHandler,
+			BufferSize:         config.AsyncBufferSize,
+			WaitTimeout:        constants.DefaultTimeout,
+			ErrorHandler:       func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
+			OverflowStrategy:   convertOverflowStrategy(config.AsyncOverflowStrategy),
+			DropHandler:        config.AsyncDropHandler,
+			DropPayloadHandler: config.AsyncDropPayloadHandler,
 			MetricsReporter: func(metrics output.AsyncMetrics) {
 				mapped := toAsyncMetrics(metrics)
 				if config.AsyncMetricsHandler != nil {

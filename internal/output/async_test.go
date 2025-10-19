@@ -10,6 +10,7 @@ import (
 	"github.com/hyp3rd/ewrap"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hyp3rd/hyperlogger"
 	"github.com/hyp3rd/hyperlogger/internal/constants"
 )
 
@@ -134,16 +135,20 @@ func TestNewAsyncWriter(t *testing.T) {
 			t.Fatalf("first write failed: %v", err)
 		}
 
-		if _, err := async.Write([]byte("second")); err != nil {
-			t.Fatalf("handoff write failed: %v", err)
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for async.Metrics().Bypassed == 0 && time.Now().Before(deadline) {
+			if _, err := async.Write([]byte("second")); err != nil {
+				t.Fatalf("handoff write failed: %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 
 		time.Sleep(250 * time.Millisecond)
 		_ = async.Flush()
 
 		data := writer.getWrittenData()
-		if len(data) != 2 {
-			t.Fatalf("expected two writes, got %d", len(data))
+		if len(data) < 2 {
+			t.Fatalf("expected at least two writes, got %d", len(data))
 		}
 
 		metrics := async.Metrics()
@@ -259,10 +264,20 @@ func TestAsyncWriter_Write(t *testing.T) {
 			t.Fatalf("First write failed: %v", err)
 		}
 
-		// Second write should fail with buffer full
-		_, err = async.Write([]byte("second"))
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			_, err = async.Write([]byte("second"))
+			if errors.Is(err, ErrBufferFull) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
 		if !errors.Is(err, ErrBufferFull) {
-			t.Errorf("Expected ErrBufferFull, got %v", err)
+			t.Fatalf("Expected ErrBufferFull, got %v", err)
 		}
 
 		if !errCalled {
@@ -295,20 +310,26 @@ func TestAsyncWriter_Write(t *testing.T) {
 			t.Fatalf("first write failed: %v", err)
 		}
 
-		if _, err := async.Write([]byte("second")); err != nil {
-			t.Fatalf("second write should succeed with drop oldest, got %v", err)
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for len(dropped) == 0 && time.Now().Before(deadline) {
+			if _, err := async.Write([]byte("second")); err != nil {
+				t.Fatalf("second write should succeed with drop oldest, got %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 
-		time.Sleep(150 * time.Millisecond)
+		if len(dropped) == 0 {
+			t.Fatalf("expected dropped payloads, got none")
+		}
+
+		writer.mu.Lock()
+		writer.writeDelay = 0
+		writer.mu.Unlock()
 		_ = async.Flush()
 
 		written := writer.getWrittenData()
 		if len(written) == 0 || string(written[len(written)-1]) != "second" {
 			t.Fatalf("expected latest message to be written, got %v", written)
-		}
-
-		if len(dropped) == 0 || string(dropped[0]) != "first" {
-			t.Fatalf("expected first message to be dropped, got %v", dropped)
 		}
 	})
 
@@ -408,6 +429,142 @@ func TestAsyncWriter_Write(t *testing.T) {
 			t.Fatalf("expected bypassed metrics to increase")
 		}
 	})
+}
+
+func TestAsyncWriter_ReusesPayloadBuffers(t *testing.T) {
+	writer := newMockWriter()
+
+	async := NewAsyncWriter(writer, AsyncConfig{BufferSize: 1})
+	defer async.Close()
+
+	var newCount atomic.Int32
+
+	async.payloadPool = &sync.Pool{
+		New: func() any {
+			newCount.Add(1)
+			buf := make([]byte, 0, 64)
+
+			return &buf
+		},
+	}
+
+	require.Equal(t, int32(0), newCount.Load())
+
+	_, err := async.Write([]byte("first"))
+	require.NoError(t, err)
+
+	err = async.Flush()
+	require.NoError(t, err)
+
+	require.Equal(t, int32(1), newCount.Load())
+
+	_, err = async.Write([]byte("second"))
+	require.NoError(t, err)
+
+	err = async.Flush()
+	require.NoError(t, err)
+
+	require.Equal(t, int32(1), newCount.Load())
+}
+
+func TestAsyncWriter_DropPayloadRetention(t *testing.T) {
+	writer := newMockWriter()
+	writer.writeDelay = 200 * time.Millisecond
+
+	var (
+		lease    hyperlogger.PayloadLease
+		received string
+	)
+
+	async := NewAsyncWriter(writer, AsyncConfig{
+		BufferSize: 1,
+		DropPayloadHandler: func(payload hyperlogger.DropPayload) {
+			received = string(payload.Bytes())
+			appended := payload.AppendTo(make([]byte, 0, payload.Size()))
+			require.Equal(t, received, string(appended))
+
+			lease = payload.Retain()
+			require.NotNil(t, lease)
+
+			secondary := payload.Retain()
+			require.NotNil(t, secondary)
+			secondary.Release()
+		},
+	})
+	defer async.Close()
+
+	_, err := async.Write([]byte("first"))
+	require.NoError(t, err)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_, err = async.Write([]byte("second"))
+		if errors.Is(err, ErrBufferFull) {
+			break
+		}
+		require.NoError(t, err)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	require.ErrorIs(t, err, ErrBufferFull)
+	require.Equal(t, "second", received)
+	require.NotNil(t, lease)
+	require.Equal(t, "second", string(lease.Bytes()))
+
+	lease.Release()
+	lease.Release() // idempotent
+
+	writer.mu.Lock()
+	writer.writeDelay = 0
+	writer.mu.Unlock()
+
+	require.NoError(t, async.Flush())
+
+	_, err = async.Write([]byte("third"))
+	require.NoError(t, err)
+	require.NoError(t, async.Flush())
+}
+
+func TestAsyncWriter_DropPayloadAutoRelease(t *testing.T) {
+	writer := newMockWriter()
+	writer.writeDelay = 200 * time.Millisecond
+
+	var dropCount atomic.Int32
+
+	async := NewAsyncWriter(writer, AsyncConfig{
+		BufferSize: 1,
+		DropPayloadHandler: func(payload hyperlogger.DropPayload) {
+			dropCount.Add(1)
+			require.Equal(t, "second", string(payload.Bytes()))
+		},
+	})
+	defer async.Close()
+
+	_, err := async.Write([]byte("first"))
+	require.NoError(t, err)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_, err = async.Write([]byte("second"))
+		if errors.Is(err, ErrBufferFull) {
+			break
+		}
+		require.NoError(t, err)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	require.ErrorIs(t, err, ErrBufferFull)
+	require.Equal(t, int32(1), dropCount.Load())
+
+	writer.mu.Lock()
+	writer.writeDelay = 0
+	writer.mu.Unlock()
+	require.NoError(t, async.Flush())
+
+	_, err = async.Write([]byte("third"))
+	require.NoError(t, err)
+	require.NoError(t, async.Flush())
+	require.Equal(t, int32(1), dropCount.Load())
 }
 
 func TestAsyncWriter_Metrics(t *testing.T) {

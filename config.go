@@ -136,6 +136,10 @@ type Config struct {
 	AsyncOverflowStrategy AsyncOverflowStrategy
 	// AsyncDropHandler is invoked when the async writer drops a log entry.
 	AsyncDropHandler func([]byte)
+	// AsyncDropPayloadHandler receives drop notifications with ownership semantics,
+	// allowing handlers to retain the underlying buffer and release it later via
+	// PayloadLease.Release to avoid extra allocations.
+	AsyncDropPayloadHandler DropPayloadHandler
 	// AsyncMetricsHandler receives async writer metrics snapshots.
 	AsyncMetricsHandler AsyncMetricsHandler
 	// DisableTimestamp disables timestamp in log entries.

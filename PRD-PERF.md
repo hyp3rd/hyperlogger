@@ -11,8 +11,8 @@ Introduce reusable encoder buffers per goroutine (e.g., a small sync.Pool keyed 
 For JSON encoding, switch to json.Encoder alternatives or handcrafted append-based encoding to avoid temporary strings.
 Async writer
 
-Current bypass path copies payload (make([]byte, len(data))). Replace with buffer leasing via a pre-allocated slab or arena-like struct (still per-instance, not global) to reuse memory.
-Drop handler currently copies into new slice; allow handler to signal “already copied” or provide a pre-allocated scratch to minimize duplicates.
+Current bypass path copies payload (make([]byte, len(data))). Replace with buffer leasing via a pre-allocated slab or arena-like struct (still per-instance, not global) to reuse memory. **(AsyncWriter now borrows payload slices from a per-writer sync.Pool, reclaims them after write/flush/drop paths, and reuses the storage for Write and WriteCritical.)**
+Drop handler currently copies into new slice; allow handler to signal “already copied” or provide a pre-allocated scratch to minimize duplicates. **(Advanced drop handlers can now retain pooled payloads via leases and release them when finished, avoiding duplicate copying.)**
 Multi-writer path
 
 io.MultiWriter (and our custom multi writer) adds allocations when wrapping simple buffers. Introduce a lightweight dualWriter for common two-sink cases to keep 0 alloc.
