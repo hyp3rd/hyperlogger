@@ -403,6 +403,18 @@ logger.RegisterHook(logger.ErrorLevel, func(ctx context.Context, entry *logger.E
 
 ### Asynchronous Logging
 
+#### Drop Handling Contracts
+
+When the async buffer overflows you can observe dropped payloads via two handlers:
+
+- `AsyncDropHandler func([]byte)` keeps the legacy contract by copying the payload before invoking your callback.
+- `AsyncDropPayloadHandler DropPayloadHandler` delivers a richer `DropPayload` object that reuses the pooled buffer. Within the handler you can:
+        - Inspect the payload with `Bytes()` or `Size()`.
+        - Copy it into your own storage via `AppendTo(dst []byte)`.
+        - Call `Retain()` to take ownership of the existing buffer and release it later with the returned `PayloadLease.Release()`, eliminating duplicate allocations when you persist or forward the log.
+
+If you retain the payload you **must** call `Release()` once you are done so the async writer can recycle the buffer. If you skip `Retain()`, the writer reclaims the buffer automatically after the handler returns.
+
 Asynchronous logging decouples logging operations from your application's main execution path, significantly improving performance:
 
 ```go
@@ -422,6 +434,7 @@ The AsyncWriter implementation provides:
 - Error handling for failed write operations
 - Multiple overflow strategies (`drop_newest`, `drop_oldest`, `block`, `handoff`)
 - Metrics callbacks that surface queue depth, drop counts, synchronous bypasses, and write failures
+- Drop callbacks that can either copy payloads (`AsyncDropHandler`) or reuse pooled buffers via leases (`AsyncDropPayloadHandler`)
 
 ```go
 log, err := adapter.NewAdapter(*logger.NewConfigBuilder().
