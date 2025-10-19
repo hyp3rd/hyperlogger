@@ -8,7 +8,7 @@ Optimize fmt.Sprintf usage inside logging: replace with pre-sized bytes.Buffer o
 Encoder buffering
 
 Introduce reusable encoder buffers per goroutine (e.g., a small sync.Pool keyed by enableJSON). Each log currently grabs a new bytes.Buffer; pooling reduces B/op and alloc count noticeably.
-For JSON encoding, switch to json.Encoder alternatives or handcrafted append-based encoding to avoid temporary strings.
+For JSON encoding, switch to json.Encoder alternatives or handcrafted append-based encoding to avoid temporary strings. **(Value formatter now appends ints/floats directly into buffers via strconv.Append*, eliminating intermediate strings.)**
 Async writer
 
 Current bypass path copies payload (make([]byte, len(data))). Replace with buffer leasing via a pre-allocated slab or arena-like struct (still per-instance, not global) to reuse memory. **(AsyncWriter now borrows payload slices from a per-writer sync.Pool, reclaims them after write/flush/drop paths, and reuses the storage for Write and WriteCritical.)**

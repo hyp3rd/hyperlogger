@@ -44,6 +44,8 @@ const (
 	fieldOverhead    = 40  // Estimated overhead per field in JSON
 	consoleFieldSize = 25  // Estimated size per field in console output
 
+	jsonDecimalBase = 10 // Base for decimal conversion in JSON
+
 	// Reuse threshold - only reuse buffers if they're within this ratio of the expected size.
 	bufferReuseRatio = 0.6
 
@@ -1173,29 +1175,29 @@ func formatJSONValue(buf *bytes.Buffer, data any) {
 	case string:
 		jsonEscapeString(buf, val)
 	case int:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int8:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int16:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int32:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int64:
-		buf.WriteString(strconv.FormatInt(val, 10))
+		appendIntJSON(buf, val)
 	case uint:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint8:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint16:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint32:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint64:
-		buf.WriteString(strconv.FormatUint(val, 10))
+		appendUintJSON(buf, val)
 	case float32:
-		buf.WriteString(strconv.FormatFloat(float64(val), 'f', -1, 32))
+		appendFloatJSON(buf, float64(val), float32BitSize)
 	case float64:
-		buf.WriteString(strconv.FormatFloat(val, 'f', -1, 64))
+		appendFloatJSON(buf, val, float64BitSize)
 	case bool:
 		if val {
 			buf.WriteString("true")
@@ -1466,4 +1468,19 @@ func nextPowerOfTwo(val int) int {
 	val++
 
 	return val
+}
+
+func appendIntJSON(buf *bytes.Buffer, value int64) {
+	var tmp [32]byte
+	buf.Write(strconv.AppendInt(tmp[:0], value, jsonDecimalBase))
+}
+
+func appendUintJSON(buf *bytes.Buffer, value uint64) {
+	var tmp [32]byte
+	buf.Write(strconv.AppendUint(tmp[:0], value, jsonDecimalBase))
+}
+
+func appendFloatJSON(buf *bytes.Buffer, value float64, bitSize int) {
+	var tmp [64]byte
+	buf.Write(strconv.AppendFloat(tmp[:0], value, 'f', -1, bitSize))
 }
