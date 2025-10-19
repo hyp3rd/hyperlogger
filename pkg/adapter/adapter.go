@@ -63,9 +63,10 @@ const (
 )
 
 const (
-	fieldSnapshotSlack      = 4 // Extra capacity to reduce frequent reallocations
+	fieldSnapshotSlack      = 4 // Extra capacity to reduce frequent reallocations.
 	callerInfoExtraCapacity = 16
 	lineNumberBase          = 10
+	hexDigits               = "0123456789abcdef" // Hexadecimal digits for encoding.
 )
 
 var (
@@ -1186,7 +1187,9 @@ func writeEscapedChar(buf *bytes.Buffer, character byte) {
 		buf.WriteString("\\t")
 	default:
 		// Control characters and others outside ASCII printable range
-		fmt.Fprintf(buf, "\\u%04x", character)
+		buf.WriteString("\\u00")
+		buf.WriteByte(hexDigits[character>>4])
+		buf.WriteByte(hexDigits[character&0x0F])
 	}
 }
 
@@ -1263,10 +1266,13 @@ func formatJSONOutput(builder *bytes.Buffer, entry *hyperlogger.Entry, config *h
 			timeFormat = time.RFC3339
 		}
 
-		timestamp := time.Now().Format(timeFormat)
-
 		builder.WriteString(`"time":"`)
-		builder.WriteString(timestamp)
+
+		var tsBuf [64]byte
+
+		formatted := time.Now().AppendFormat(tsBuf[:0], timeFormat)
+		builder.Write(formatted)
+
 		builder.WriteString(`",`)
 	}
 
