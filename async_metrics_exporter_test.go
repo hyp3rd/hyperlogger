@@ -2,6 +2,7 @@ package hyperlogger
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -21,7 +22,7 @@ func TestAsyncMetricsExporter(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	exporter.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	exporter.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
 	body := rec.Body.String()
 

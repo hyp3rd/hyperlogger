@@ -35,11 +35,16 @@ const (
 	largeBufferSize  = 16384
 	xlargeBufferSize = 32768
 
+	float32BitSize = 32
+	float64BitSize = 64
+
 	// Predicted sizes by message type to reduce reallocations.
 	jsonBaseSize     = 200 // Base size for JSON messages
 	consoleBaseSize  = 100 // Base size for console messages
 	fieldOverhead    = 40  // Estimated overhead per field in JSON
 	consoleFieldSize = 25  // Estimated size per field in console output
+
+	jsonDecimalBase = 10 // Base for decimal conversion in JSON
 
 	// Reuse threshold - only reuse buffers if they're within this ratio of the expected size.
 	bufferReuseRatio = 0.6
@@ -55,6 +60,13 @@ const (
 	// ASCII control characters and printable range.
 	asciiControlStart = 32  // Start of ASCII printable characters (space)
 	asciiControlEnd   = 126 // End of ASCII printable characters (~)
+)
+
+const (
+	fieldSnapshotSlack      = 4 // Extra capacity to reduce frequent reallocations.
+	callerInfoExtraCapacity = 16
+	lineNumberBase          = 10
+	hexDigits               = "0123456789abcdef" // Hexadecimal digits for encoding.
 )
 
 var (
@@ -138,6 +150,10 @@ type Adapter struct {
 
 	// Unified buffer pool system
 	bufferPool []*bufferPoolBucket
+	fieldsPool *sync.Pool
+
+	consoleEncoderPool *sync.Pool
+	jsonEncoderPool    *sync.Pool
 }
 
 // NewAdapter creates a new logger adapter with the given configuration.
@@ -169,6 +185,26 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 		encoder:      enc,
 	}
 
+	adapter.consoleEncoderPool = &sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, consoleBaseSize))
+		},
+	}
+
+	adapter.jsonEncoderPool = &sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, jsonBaseSize))
+		},
+	}
+
+	adapter.fieldsPool = &sync.Pool{
+		New: func() any {
+			slice := make([]hyperlogger.Field, 0, len(adapter.fields)+fieldSnapshotSlack)
+
+			return &slice
+		},
+	}
+
 	adapter.level.Store(uint32(config.Level))
 
 	// Set up unified buffer pool with multiple size buckets
@@ -178,31 +214,13 @@ func NewAdapter(ctx context.Context, config hyperlogger.Config) (hyperlogger.Log
 
 	// Wrap output in AsyncWriter if async logging is enabled
 	if config.EnableAsync {
-		asyncConfig := output.AsyncConfig{
-			BufferSize:       config.AsyncBufferSize,
-			WaitTimeout:      constants.DefaultTimeout,
-			ErrorHandler:     func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
-			OverflowStrategy: convertOverflowStrategy(config.AsyncOverflowStrategy),
-			DropHandler:      config.AsyncDropHandler,
-			MetricsReporter: func(metrics output.AsyncMetrics) {
-				mapped := toAsyncMetrics(metrics)
-				if config.AsyncMetricsHandler != nil {
-					config.AsyncMetricsHandler(normalizedCtx, mapped)
-				}
-
-				hyperlogger.EmitAsyncMetrics(normalizedCtx, mapped)
-			},
-		}
-
-		adapter.config.Output = output.NewAsyncWriter(config.Output, asyncConfig)
+		adapter.setAsyncOutput(normalizedCtx, &config)
 	}
 
 	// Register hooks from config
-	for _, hookConfig := range config.Hooks {
-		err := adapter.hookRegistry.AddHook(hookConfig.Name, hookConfig.Hook)
-		if err != nil {
-			return nil, ewrap.Wrapf(err, "failed to register hook '%s'", hookConfig.Name)
-		}
+	err = adapter.registerHooks(config.Hooks)
+	if err != nil {
+		return nil, err
 	}
 
 	return adapter, nil
@@ -314,7 +332,13 @@ func (a *Adapter) WithContext(ctx context.Context) hyperlogger.Logger {
 
 // WithField adds a field to the hyperlogger.
 func (a *Adapter) WithField(key string, value any) hyperlogger.Logger {
-	return a.WithFields(hyperlogger.Field{Key: key, Value: value})
+	if key == "" {
+		return a
+	}
+
+	updated := appendOrReplaceField(a.fields, hyperlogger.Field{Key: key, Value: value})
+
+	return a.cloneWithFields(updated)
 }
 
 // WithFields adds fields to the hyperlogger.
@@ -323,19 +347,9 @@ func (a *Adapter) WithFields(fields ...hyperlogger.Field) hyperlogger.Logger {
 		return a
 	}
 
-	// Create a new adapter with the same config but merged fields
-	newAdapter := &Adapter{
-		config:       a.config,
-		level:        a.level,
-		fields:       mergeFields(a.fields, fields),
-		hookRegistry: a.hookRegistry,
-		ctx:          a.ctx,
-		bufferPool:   a.bufferPool,
-		sampler:      a.sampler,
-		encoder:      a.encoder,
-	}
+	merged := mergeFieldSets(a.fields, fields)
 
-	return newAdapter
+	return a.cloneWithFields(merged)
 }
 
 // WithError adds an error field to the hyperlogger.
@@ -344,7 +358,7 @@ func (a *Adapter) WithError(err error) hyperlogger.Logger {
 		return a
 	}
 
-	return a.WithField("error", err.Error())
+	return a.WithField("error", err)
 }
 
 // GetLevel returns the current logging level.
@@ -393,6 +407,40 @@ func validateConfig(config *hyperlogger.Config) error {
 	}
 
 	return nil
+}
+
+// registerHooks registers hooks from the configuration into the adapter's hook registry.
+func (a *Adapter) registerHooks(hooksConfig []hyperlogger.HookConfig) error {
+	for _, hookConfig := range hooksConfig {
+		err := a.hookRegistry.AddHook(hookConfig.Name, hookConfig.Hook)
+		if err != nil {
+			return ewrap.Wrapf(err, "failed to register hook '%s'", hookConfig.Name)
+		}
+	}
+
+	return nil
+}
+
+// setAsyncOutput configures the adapter to use an AsyncWriter for log output.
+func (a *Adapter) setAsyncOutput(ctx context.Context, config *hyperlogger.Config) {
+	asyncConfig := output.AsyncConfig{
+		BufferSize:         config.AsyncBufferSize,
+		WaitTimeout:        constants.DefaultTimeout,
+		ErrorHandler:       func(err error) { fmt.Fprintf(os.Stderr, "Error in async logger: %v\n", err) },
+		OverflowStrategy:   convertOverflowStrategy(config.AsyncOverflowStrategy),
+		DropHandler:        config.AsyncDropHandler,
+		DropPayloadHandler: config.AsyncDropPayloadHandler,
+		MetricsReporter: func(metrics output.AsyncMetrics) {
+			mapped := toAsyncMetrics(metrics)
+			if config.AsyncMetricsHandler != nil {
+				config.AsyncMetricsHandler(ctx, mapped)
+			}
+
+			hyperlogger.EmitAsyncMetrics(ctx, mapped)
+		},
+	}
+
+	a.config.Output = output.NewAsyncWriter(config.Output, asyncConfig)
 }
 
 func enforceColorPolicy(config *hyperlogger.Config) {
@@ -448,6 +496,70 @@ func cloneFields(fields []hyperlogger.Field) []hyperlogger.Field {
 	copy(cloned, fields)
 
 	return cloned
+}
+
+func (a *Adapter) cloneWithFields(fields []hyperlogger.Field) *Adapter {
+	return &Adapter{
+		config:       a.config,
+		hookRegistry: a.hookRegistry,
+		level:        a.level,
+		ctx:          a.ctx,
+		fields:       fields,
+		sampler:      a.sampler,
+		encoder:      a.encoder,
+		bufferPool:   a.bufferPool,
+		fieldsPool:   a.fieldsPool,
+	}
+}
+
+func (a *Adapter) borrowFieldsSnapshot(extra int) ([]hyperlogger.Field, *[]hyperlogger.Field) {
+	baseLen := len(a.fields)
+	desiredCap := baseLen + extra + fieldSnapshotSlack
+
+	var storage *[]hyperlogger.Field
+
+	if pool := a.fieldsPool; pool != nil {
+		if raw := pool.Get(); raw != nil {
+			if candidate, ok := raw.(*[]hyperlogger.Field); ok && candidate != nil {
+				storage = candidate
+			}
+		}
+	}
+
+	if storage == nil {
+		slice := make([]hyperlogger.Field, 0, desiredCap)
+		storage = &slice
+	}
+
+	fields := *storage
+	if cap(fields) < desiredCap {
+		fields = make([]hyperlogger.Field, 0, desiredCap)
+	} else {
+		fields = fields[:0]
+	}
+
+	fields = append(fields, a.fields...)
+	*storage = fields
+
+	return fields, storage
+}
+
+func (a *Adapter) releaseFieldsSnapshot(storage *[]hyperlogger.Field) {
+	if storage == nil {
+		return
+	}
+
+	fields := *storage
+	for i := range fields {
+		fields[i] = hyperlogger.Field{}
+	}
+
+	fields = fields[:0]
+	*storage = fields
+
+	if pool := a.fieldsPool; pool != nil {
+		pool.Put(storage)
+	}
 }
 
 func prepareOutput(config *hyperlogger.Config) error {
@@ -620,35 +732,37 @@ func toAsyncMetrics(metrics output.AsyncMetrics) hyperlogger.AsyncMetrics {
 	}
 }
 
-// mergeFields combines multiple field slices into a single slice, avoiding duplicates.
-// Fields from later slices override those from earlier ones if they have the same key.
-func mergeFields(fields ...[]hyperlogger.Field) []hyperlogger.Field {
-	if len(fields) == 0 {
-		return nil
+func appendOrReplaceField(base []hyperlogger.Field, field hyperlogger.Field) []hyperlogger.Field {
+	if len(base) == 0 {
+		return []hyperlogger.Field{field}
 	}
 
-	// Count total capacity needed
-	totalCap := 0
-	for _, fs := range fields {
-		totalCap += len(fs)
-	}
+	result := cloneFields(base)
 
-	// Create map to track field keys for de-duplication
-	seen := make(map[string]int, totalCap)
-	result := make([]hyperlogger.Field, 0, totalCap)
+	return appendOrReplaceInPlace(result, field)
+}
 
-	// Merge all field slices
-	for _, fs := range fields {
-		for _, field := range fs {
-			if idx, exists := seen[field.Key]; exists {
-				// Update existing field
-				result[idx].Value = field.Value
-			} else {
-				// Add new field
-				seen[field.Key] = len(result)
-				result = append(result, field)
-			}
+func appendOrReplaceInPlace(fields []hyperlogger.Field, field hyperlogger.Field) []hyperlogger.Field {
+	for i := range fields {
+		if fields[i].Key == field.Key {
+			fields[i].Value = field.Value
+
+			return fields
 		}
+	}
+
+	return append(fields, field)
+}
+
+func mergeFieldSets(base []hyperlogger.Field, extras []hyperlogger.Field) []hyperlogger.Field {
+	if len(base) == 0 {
+		return cloneFields(extras)
+	}
+
+	result := append(make([]hyperlogger.Field, 0, len(base)+len(extras)), base...)
+
+	for _, extra := range extras {
+		result = appendOrReplaceInPlace(result, extra)
 	}
 
 	return result
@@ -747,7 +861,14 @@ func formatCallerInfo(file string, line int, funcName string, shortPath bool) st
 		file = filepath.Base(file)
 	}
 
-	return fmt.Sprintf("%s:%d %s", file, line, funcName)
+	buf := make([]byte, 0, len(file)+len(funcName)+callerInfoExtraCapacity)
+	buf = append(buf, file...)
+	buf = append(buf, ':')
+	buf = strconv.AppendInt(buf, int64(line), lineNumberBase)
+	buf = append(buf, ' ')
+	buf = append(buf, funcName...)
+
+	return string(buf)
 }
 
 func normalizeContext(ctx context.Context) context.Context {
@@ -757,31 +878,6 @@ func normalizeContext(ctx context.Context) context.Context {
 	default:
 		return ctx
 	}
-}
-
-// withContext adds context values to the fields.
-func withContext(ctx context.Context, fields []hyperlogger.Field, cfg *hyperlogger.Config) []hyperlogger.Field {
-	if ctx == nil {
-		return fields
-	}
-
-	var extras []hyperlogger.Field
-
-	extras = extractContextKeys(ctx, extras)
-
-	if global := hyperlogger.GlobalContextExtractors(); len(global) > 0 {
-		extras = append(extras, hyperlogger.ApplyContextExtractors(ctx, global...)...)
-	}
-
-	if cfg != nil {
-		extras = append(extras, hyperlogger.ApplyContextExtractors(ctx, cfg.ContextExtractors...)...)
-	}
-
-	if len(extras) == 0 {
-		return fields
-	}
-
-	return mergeFields(fields, extras)
 }
 
 // extractContextKeys extracts known context keys and adds them as fields.
@@ -797,6 +893,24 @@ func extractContextKeys(ctx context.Context, extras []hyperlogger.Field) []hyper
 	}
 
 	return extras
+}
+
+func appendContextFields(ctx context.Context, cfg *hyperlogger.Config, dst []hyperlogger.Field) []hyperlogger.Field {
+	if ctx == nil {
+		return dst
+	}
+
+	dst = extractContextKeys(ctx, dst)
+
+	if globals := hyperlogger.GlobalContextExtractors(); len(globals) > 0 {
+		dst = append(dst, hyperlogger.ApplyContextExtractors(ctx, globals...)...)
+	}
+
+	if cfg != nil {
+		dst = append(dst, hyperlogger.ApplyContextExtractors(ctx, cfg.ContextExtractors...)...)
+	}
+
+	return dst
 }
 
 // attachStackTrace appends a stack trace to the entry when enabled for high-severity logs.
@@ -825,6 +939,8 @@ func (a *Adapter) attachStackTrace(entry *hyperlogger.Entry) {
 }
 
 // formatValue formats a value for logging.
+//
+//nolint:cyclop,funlen,revive // complexity is acceptable for this utility function. Splitting may reduce readability.
 func formatValue(v any) string {
 	if v == nil {
 		return "null"
@@ -833,9 +949,31 @@ func formatValue(v any) string {
 	switch val := v.(type) {
 	case string:
 		return val
-	case int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64, complex64, complex128:
+	case int:
+		return strconv.Itoa(val)
+	case int8:
+		return strconv.FormatInt(int64(val), 10)
+	case int16:
+		return strconv.FormatInt(int64(val), 10)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, float32BitSize)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, float64BitSize)
+	case complex64, complex128:
 		return fmt.Sprintf("%v", val)
 	case bool:
 		return strconv.FormatBool(val)
@@ -1049,7 +1187,9 @@ func writeEscapedChar(buf *bytes.Buffer, character byte) {
 		buf.WriteString("\\t")
 	default:
 		// Control characters and others outside ASCII printable range
-		fmt.Fprintf(buf, "\\u%04x", character)
+		buf.WriteString("\\u00")
+		buf.WriteByte(hexDigits[character>>4])
+		buf.WriteByte(hexDigits[character&0x0F])
 	}
 }
 
@@ -1068,29 +1208,29 @@ func formatJSONValue(buf *bytes.Buffer, data any) {
 	case string:
 		jsonEscapeString(buf, val)
 	case int:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int8:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int16:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int32:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendIntJSON(buf, int64(val))
 	case int64:
-		buf.WriteString(strconv.FormatInt(val, 10))
+		appendIntJSON(buf, val)
 	case uint:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint8:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint16:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint32:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUintJSON(buf, uint64(val))
 	case uint64:
-		buf.WriteString(strconv.FormatUint(val, 10))
+		appendUintJSON(buf, val)
 	case float32:
-		buf.WriteString(strconv.FormatFloat(float64(val), 'f', -1, 32))
+		appendFloatJSON(buf, float64(val), float32BitSize)
 	case float64:
-		buf.WriteString(strconv.FormatFloat(val, 'f', -1, 64))
+		appendFloatJSON(buf, val, float64BitSize)
 	case bool:
 		if val {
 			buf.WriteString("true")
@@ -1126,10 +1266,13 @@ func formatJSONOutput(builder *bytes.Buffer, entry *hyperlogger.Entry, config *h
 			timeFormat = time.RFC3339
 		}
 
-		timestamp := time.Now().Format(timeFormat)
-
 		builder.WriteString(`"time":"`)
-		builder.WriteString(timestamp)
+
+		var tsBuf [64]byte
+
+		formatted := time.Now().AppendFormat(tsBuf[:0], timeFormat)
+		builder.Write(formatted)
+
 		builder.WriteString(`",`)
 	}
 
@@ -1174,33 +1317,79 @@ func formatJSONOutput(builder *bytes.Buffer, entry *hyperlogger.Entry, config *h
 	builder.WriteString("}\n")
 }
 
-func (a *Adapter) encodeEntry(entry *hyperlogger.Entry) ([]byte, *bytes.Buffer, error) {
+// encodeEntry encodes a log entry using the configured encoder.
+//
+//nolint:revive // multiple return values are necessary here.
+func (a *Adapter) encodeEntry(entry *hyperlogger.Entry) ([]byte, *bytes.Buffer, bool, error) {
 	if entry == nil {
-		return nil, nil, ewrap.New("entry cannot be nil")
+		return nil, nil, false, ewrap.New("entry cannot be nil")
 	}
 
 	if a.encoder == nil {
-		return nil, nil, ewrap.Wrap(ErrEncoderNotFound, "no encoder configured")
+		return nil, nil, false, ewrap.Wrap(ErrEncoderNotFound, "no encoder configured")
+	}
+
+	isJSON := a.config != nil && a.config.EnableJSON
+	buf, pooled := a.borrowEncoderBuffer(entry, isJSON)
+
+	data, err := a.encoder.Encode(entry, a.config, buf)
+	if err != nil {
+		a.releaseEncoderBuffer(buf, isJSON, pooled)
+
+		return nil, nil, false, err
+	}
+
+	return data, buf, pooled, nil
+}
+
+func (a *Adapter) borrowEncoderBuffer(entry *hyperlogger.Entry, isJSON bool) (*bytes.Buffer, bool) {
+	pool := a.consoleEncoderPool
+	if isJSON {
+		pool = a.jsonEncoderPool
 	}
 
 	size := a.encoder.EstimateSize(entry)
 	if size <= 0 {
-		size = predictBufferSize(a.config != nil && a.config.EnableJSON, len(entry.Message), len(entry.Fields))
+		size = predictBufferSize(isJSON, len(entry.Message), len(entry.Fields))
+	}
+	//nolint:nestif // breaking it down further would reduce readability.
+	if pool != nil {
+		if candidate := pool.Get(); candidate != nil {
+			if buf, ok := candidate.(*bytes.Buffer); ok && buf != nil {
+				if buf.Cap() >= size {
+					buf.Reset()
+
+					return buf, true
+				}
+
+				a.recycleEncoderBuffer(buf, isJSON)
+			}
+		}
 	}
 
 	buf := a.getBuffer(size)
+	buf.Reset()
 
-	data, err := a.encoder.Encode(entry, a.config, buf)
-	if err != nil {
-		a.returnBuffer(buf)
+	return buf, false
+}
 
-		return nil, nil, err
+func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON bool, pooled bool) {
+	if buf == nil {
+		return
 	}
 
-	return data, buf, nil
+	if pooled {
+		a.recycleEncoderBuffer(buf, isJSON)
+
+		return
+	}
+
+	a.returnBuffer(buf)
 }
 
 // log handles the common logging logic for all log levels.
+//
+//nolint:cyclop // complexity is acceptable for this core function. Splitting may reduce readability.
 func (a *Adapter) log(level hyperlogger.Level, msg string) {
 	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
 	if level < hyperlogger.Level(a.level.Load()) {
@@ -1211,15 +1400,25 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 		return
 	}
 
-	// Create log entry with cloned base fields to avoid cross-request mutation.
+	var extrasBuf [fieldSnapshotSlack]hyperlogger.Field
+
+	extraFields := extrasBuf[:0]
+	extraFields = appendContextFields(a.ctx, a.config, extraFields)
+
+	baseFields, storage := a.borrowFieldsSnapshot(len(extraFields))
+	defer a.releaseFieldsSnapshot(storage)
+
+	entryFields := baseFields
+	if len(extraFields) > 0 {
+		entryFields = append(entryFields, extraFields...)
+		*storage = entryFields
+	}
+
 	entry := &hyperlogger.Entry{
 		Level:   level,
 		Message: msg,
-		Fields:  cloneFields(a.fields),
+		Fields:  entryFields,
 	}
-
-	// Add context values to fields
-	entry.Fields = withContext(a.ctx, entry.Fields, a.config)
 
 	// Attach stack trace for error-level logs when configured
 	a.attachStackTrace(entry)
@@ -1230,9 +1429,10 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 	}
 
 	// Format and write the log entry
-	encoded, buf, err := a.encodeEntry(entry)
+	encoded, buf, pooled, err := a.encodeEntry(entry)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to encode log entry: %v\n", err)
+		a.recycleEncoderBuffer(buf, a.config != nil && a.config.EnableJSON)
 
 		return
 	}
@@ -1252,7 +1452,7 @@ func (a *Adapter) log(level hyperlogger.Level, msg string) {
 		fmt.Fprintf(os.Stderr, "Failed to write log: %v\n", err)
 	}
 
-	a.returnBuffer(buf)
+	a.releaseEncoderBuffer(buf, a.config != nil && a.config.EnableJSON, pooled)
 
 	// If this is a fatal log, exit the program
 	if level == hyperlogger.FatalLevel {
@@ -1302,7 +1502,7 @@ func (a *Adapter) logHookError(err error) {
 		Fields:  nil,
 	}
 
-	encoded, errBuf, encodeErr := a.encodeEntry(errEntry)
+	encoded, errBuf, pooled, encodeErr := a.encodeEntry(errEntry)
 	if encodeErr != nil {
 		fmt.Fprintf(os.Stderr, "Failed to encode hook error: %v\n", encodeErr)
 
@@ -1315,7 +1515,7 @@ func (a *Adapter) logHookError(err error) {
 		fmt.Fprintf(os.Stderr, "Failed to write error log: %v\n", writeErr)
 	}
 
-	a.returnBuffer(errBuf)
+	a.releaseEncoderBuffer(errBuf, a.config != nil && a.config.EnableJSON, pooled)
 }
 
 // predictBufferSize calculates a more accurate buffer size based on content.
@@ -1351,4 +1551,41 @@ func nextPowerOfTwo(val int) int {
 	val++
 
 	return val
+}
+
+func (a *Adapter) recycleEncoderBuffer(buf *bytes.Buffer, isJSON bool) {
+	if buf == nil {
+		return
+	}
+
+	if isJSON {
+		if pool := a.jsonEncoderPool; pool != nil {
+			pool.Put(buf)
+
+			return
+		}
+	}
+
+	if pool := a.consoleEncoderPool; pool != nil {
+		pool.Put(buf)
+
+		return
+	}
+
+	a.returnBuffer(buf)
+}
+
+func appendIntJSON(buf *bytes.Buffer, value int64) {
+	var tmp [32]byte
+	buf.Write(strconv.AppendInt(tmp[:0], value, jsonDecimalBase))
+}
+
+func appendUintJSON(buf *bytes.Buffer, value uint64) {
+	var tmp [32]byte
+	buf.Write(strconv.AppendUint(tmp[:0], value, jsonDecimalBase))
+}
+
+func appendFloatJSON(buf *bytes.Buffer, value float64, bitSize int) {
+	var tmp [64]byte
+	buf.Write(strconv.AppendFloat(tmp[:0], value, 'f', -1, bitSize))
 }

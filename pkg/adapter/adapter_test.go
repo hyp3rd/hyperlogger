@@ -631,7 +631,9 @@ func TestAdapter_ContextDoesNotLeakBetweenLogs(t *testing.T) {
 func TestAdapter_CustomContextExtractors(t *testing.T) {
 	buf := &bytes.Buffer{}
 	extractorCalled := false
+
 	type customContextKey struct{}
+
 	cfg := hyperlogger.Config{
 		Output:     buf,
 		EnableJSON: true,
@@ -639,6 +641,7 @@ func TestAdapter_CustomContextExtractors(t *testing.T) {
 		ContextExtractors: []hyperlogger.ContextExtractor{
 			func(ctx context.Context) []hyperlogger.Field {
 				extractorCalled = true
+
 				if val, ok := ctx.Value(customContextKey{}).(string); ok && val != "" {
 					return []hyperlogger.Field{{Key: "custom", Value: val}}
 				}
@@ -677,6 +680,7 @@ func TestAdapter_GlobalContextExtractors(t *testing.T) {
 	cfg.Output = buf
 	cfg.EnableJSON = true
 	cfg.Level = hyperlogger.DebugLevel
+
 	loggerInstance, err := NewAdapter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error creating adapter: %v", err)
@@ -695,9 +699,11 @@ func TestAdapter_AsyncMetricsHandler(t *testing.T) {
 	hyperlogger.ClearAsyncMetricsHandlers()
 	defer hyperlogger.ClearAsyncMetricsHandlers()
 
-	var mu sync.Mutex
-	var localSnapshots []hyperlogger.AsyncMetrics
-	var globalSnapshots []hyperlogger.AsyncMetrics
+	var (
+		mu              sync.Mutex
+		localSnapshots  []hyperlogger.AsyncMetrics
+		globalSnapshots []hyperlogger.AsyncMetrics
+	)
 
 	config := hyperlogger.Config{}
 	config.Output = &bytes.Buffer{}
@@ -707,13 +713,17 @@ func TestAdapter_AsyncMetricsHandler(t *testing.T) {
 	config.AsyncOverflowStrategy = hyperlogger.AsyncOverflowDropNewest
 	config.AsyncMetricsHandler = func(ctx context.Context, metrics hyperlogger.AsyncMetrics) {
 		mu.Lock()
+
 		localSnapshots = append(localSnapshots, metrics)
+
 		mu.Unlock()
 	}
 
 	hyperlogger.RegisterAsyncMetricsHandler(func(ctx context.Context, metrics hyperlogger.AsyncMetrics) {
 		mu.Lock()
+
 		globalSnapshots = append(globalSnapshots, metrics)
+
 		mu.Unlock()
 	})
 
@@ -726,6 +736,7 @@ func TestAdapter_AsyncMetricsHandler(t *testing.T) {
 	loggerInstance.Info("second message")
 
 	time.Sleep(100 * time.Millisecond)
+
 	_ = loggerInstance.Sync()
 
 	mu.Lock()
@@ -805,6 +816,7 @@ type testEncoder struct {
 
 func (e *testEncoder) Encode(entry *hyperlogger.Entry, _ *hyperlogger.Config, buf *bytes.Buffer) ([]byte, error) {
 	e.calls++
+
 	buf.Reset()
 	buf.WriteString("encoded:" + entry.Message)
 
@@ -821,12 +833,14 @@ func (e *testEncoder) EstimateSize(entry *hyperlogger.Entry) int {
 
 func TestAdapter_GlobalHooks(t *testing.T) {
 	defer hyperlogger.UnregisterAllHooks()
+
 	hyperlogger.UnregisterAllHooks()
 
 	var called atomic.Bool
 
 	hyperlogger.RegisterHook(hyperlogger.InfoLevel, func(ctx context.Context, entry *hyperlogger.Entry) error {
 		called.Store(true)
+
 		if ctx == nil {
 			t.Fatalf("expected context to be forwarded to hook")
 		}
@@ -886,17 +900,19 @@ func TestAdapter_LevelConcurrency(t *testing.T) {
 	loggerInstance, err := NewAdapter(context.Background(), cfg)
 	require.NoError(t, err)
 
-	const goroutines = 8
-	const iterations = 500
+	const (
+		goroutines = 8
+		iterations = 500
+	)
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 
-			for j := 0; j < iterations; j++ {
+			for j := range iterations {
 				level := hyperlogger.Level(j % int(hyperlogger.FatalLevel+1))
 				loggerInstance.SetLevel(level)
 				_ = loggerInstance.GetLevel()
@@ -950,57 +966,6 @@ func TestAdapter_Sync(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
-		})
-	}
-}
-
-func TestMergeFields(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    [][]hyperlogger.Field
-		expected []hyperlogger.Field
-	}{
-		{
-			name:     "empty input",
-			input:    [][]hyperlogger.Field{},
-			expected: nil,
-		},
-		{
-			name: "single slice",
-			input: [][]hyperlogger.Field{
-				{{Key: "key1", Value: "value1"}},
-			},
-			expected: []hyperlogger.Field{
-				{Key: "key1", Value: "value1"},
-			},
-		},
-		{
-			name: "multiple slices with unique keys",
-			input: [][]hyperlogger.Field{
-				{{Key: "key1", Value: "value1"}},
-				{{Key: "key2", Value: "value2"}},
-			},
-			expected: []hyperlogger.Field{
-				{Key: "key1", Value: "value1"},
-				{Key: "key2", Value: "value2"},
-			},
-		},
-		{
-			name: "duplicate keys - later overrides earlier",
-			input: [][]hyperlogger.Field{
-				{{Key: "key1", Value: "first"}},
-				{{Key: "key1", Value: "second"}},
-			},
-			expected: []hyperlogger.Field{
-				{Key: "key1", Value: "second"},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := mergeFields(tt.input...)
-			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
@@ -1268,6 +1233,7 @@ func BenchmarkAdapterLogging(b *testing.B) {
 	for _, bc := range cases {
 		b.Run(bc.name, func(b *testing.B) {
 			buf := &bytes.Buffer{}
+
 			var outputWriter io.Writer = buf
 			if bc.multi {
 				outputWriter = io.MultiWriter(buf, io.Discard)

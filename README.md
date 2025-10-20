@@ -35,12 +35,19 @@ PASS
 ok   github.com/hyp3rd/hyperlogger 0.195s
 goos: darwin
 goarch: arm64
-pkg: github.com/hyp3rd/hyperlogger/adapter
-cpu: Apple M3 Pro
-BenchmarkAdapterLogging/TextLogging_NoFields-12           7643400        543.9 ns/op      632 B/op        5 allocs/op
-BenchmarkAdapterLogging/TextLogging_5Fields-12            7104121        565.1 ns/op      805 B/op        5 allocs/op
-BenchmarkAdapterLogging/JSONLogging_NoFields-12           5894107        675.6 ns/op      978 B/op        8 allocs/op
-BenchmarkAdapterLogging/JSONLogging_5Fields-12            4864885        803.1 ns/op     1314 B/op        8 allocs/op
+pkg: github.com/hyp3rd/hyperlogger/pkg/adapter
+cpu: Apple M2 Pro
+BenchmarkAdapterLogging/TextLogging_NoFields-12             4379250         804.9 ns/op         597 B/op            5 allocs/op
+BenchmarkAdapterLogging/TextLogging_5Fields-12              4343899         897.8 ns/op         722 B/op            5 allocs/op
+BenchmarkAdapterLogging/JSONLogging_NoFields-12             3996409         890.4 ns/op         859 B/op            6 allocs/op
+BenchmarkAdapterLogging/JSONLogging_5Fields-12              3378655        1085.0 ns/op        1091 B/op            6 allocs/op
+BenchmarkAdapterLogging/TextLogging_MultiWriter-12          4484455         811.8 ns/op         651 B/op            5 allocs/op
+PASS
+
+BenchmarkAsyncWriter/drop_newest-12             194167740            18.48 ns/op            24 B/op         1 allocs/op
+BenchmarkAsyncWriter/drop_oldest-12              74881224            49.95 ns/op            24 B/op         1 allocs/op
+BenchmarkAsyncWriter/block-12                       14628           245278 ns/op           166 B/op         2 allocs/op
+BenchmarkAsyncWriter/handoff-12                     29034           124309 ns/op           180 B/op         2 allocs/op
 PASS
 ```
 
@@ -396,6 +403,18 @@ logger.RegisterHook(logger.ErrorLevel, func(ctx context.Context, entry *logger.E
 
 ### Asynchronous Logging
 
+#### Drop Handling Contracts
+
+When the async buffer overflows you can observe dropped payloads via two handlers:
+
+- `AsyncDropHandler func([]byte)` keeps the legacy contract by copying the payload before invoking your callback.
+- `AsyncDropPayloadHandler DropPayloadHandler` delivers a richer `DropPayload` object that reuses the pooled buffer. Within the handler you can:
+        - Inspect the payload with `Bytes()` or `Size()`.
+        - Copy it into your own storage via `AppendTo(dst []byte)`.
+        - Call `Retain()` to take ownership of the existing buffer and release it later with the returned `PayloadLease.Release()`, eliminating duplicate allocations when you persist or forward the log.
+
+If you retain the payload you **must** call `Release()` once you are done so the async writer can recycle the buffer. If you skip `Retain()`, the writer reclaims the buffer automatically after the handler returns.
+
 Asynchronous logging decouples logging operations from your application's main execution path, significantly improving performance:
 
 ```go
@@ -415,6 +434,7 @@ The AsyncWriter implementation provides:
 - Error handling for failed write operations
 - Multiple overflow strategies (`drop_newest`, `drop_oldest`, `block`, `handoff`)
 - Metrics callbacks that surface queue depth, drop counts, synchronous bypasses, and write failures
+- Drop callbacks that can either copy payloads (`AsyncDropHandler`) or reuse pooled buffers via leases (`AsyncDropPayloadHandler`)
 
 ```go
 log, err := adapter.NewAdapter(*logger.NewConfigBuilder().

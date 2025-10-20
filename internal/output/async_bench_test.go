@@ -29,9 +29,11 @@ func BenchmarkAsyncWriter(b *testing.B) {
 			defer async.Close()
 
 			payload := []byte("benchmark message")
+
 			b.ReportAllocs()
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+
+			for range b.N {
 				_, _ = async.Write(payload)
 			}
 		})

@@ -193,6 +193,29 @@ func TestWithAsyncDropHandler(t *testing.T) {
 	}
 }
 
+func TestWithAsyncDropPayloadHandler(t *testing.T) {
+	called := false
+	handler := func(payload DropPayload) {
+		called = true
+
+		if payload.Size() == 0 {
+			t.Error("expected payload to have data")
+		}
+	}
+
+	config := NewConfigBuilder().WithAsyncDropPayloadHandler(handler).Build()
+
+	if config.AsyncDropPayloadHandler == nil {
+		t.Fatal("expected drop payload handler to be set")
+	}
+
+	config.AsyncDropPayloadHandler(&mockDropPayload{data: []byte("payload")})
+
+	if !called {
+		t.Error("expected drop payload handler to be invoked")
+	}
+}
+
 func TestWithAsyncMetricsHandler(t *testing.T) {
 	called := false
 	config := NewConfigBuilder().WithAsyncMetricsHandler(func(ctx context.Context, metrics AsyncMetrics) {
@@ -204,6 +227,7 @@ func TestWithAsyncMetricsHandler(t *testing.T) {
 	}
 
 	config.AsyncMetricsHandler(context.Background(), AsyncMetrics{})
+
 	if !called {
 		t.Fatal("expected handler to be invoked")
 	}
@@ -211,10 +235,12 @@ func TestWithAsyncMetricsHandler(t *testing.T) {
 
 func TestWithContextExtractor(t *testing.T) {
 	var saw bool
+
 	type ctxKey struct{}
 
 	extractor := func(ctx context.Context) []Field {
 		saw = true
+
 		if val, ok := ctx.Value(ctxKey{}).(string); ok && val != "" {
 			return []Field{{Key: "example", Value: val}}
 		}
@@ -229,6 +255,7 @@ func TestWithContextExtractor(t *testing.T) {
 	}
 
 	ctx := context.WithValue(context.Background(), ctxKey{}, "value")
+
 	fields := config.ContextExtractors[0](ctx)
 	if !saw || len(fields) != 1 || fields[0].Value != "value" {
 		t.Fatalf("context extractor not invoked correctly: %+v", fields)
@@ -508,3 +535,33 @@ func TestChaining(t *testing.T) {
 		t.Error("Chained WithCaller did not work")
 	}
 }
+
+type mockDropPayload struct {
+	data []byte
+}
+
+func (m *mockDropPayload) Bytes() []byte {
+	return m.data
+}
+
+func (m *mockDropPayload) Size() int {
+	return len(m.data)
+}
+
+func (m *mockDropPayload) AppendTo(dst []byte) []byte {
+	return append(dst, m.data...)
+}
+
+func (m *mockDropPayload) Retain() PayloadLease {
+	return &noopLease{data: m.data}
+}
+
+type noopLease struct {
+	data []byte
+}
+
+func (n *noopLease) Bytes() []byte {
+	return n.data
+}
+
+func (n *noopLease) Release() {}

@@ -175,6 +175,13 @@ func (b *ConfigBuilder) WithAsyncDropHandler(handler func([]byte)) *ConfigBuilde
 	return b
 }
 
+// WithAsyncDropPayloadHandler sets the ownership-aware drop handler.
+func (b *ConfigBuilder) WithAsyncDropPayloadHandler(handler DropPayloadHandler) *ConfigBuilder {
+	b.config.AsyncDropPayloadHandler = handler
+
+	return b
+}
+
 // WithAsyncMetricsHandler sets the handler that receives async writer metrics snapshots.
 func (b *ConfigBuilder) WithAsyncMetricsHandler(handler AsyncMetricsHandler) *ConfigBuilder {
 	b.config.AsyncMetricsHandler = handler

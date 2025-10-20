@@ -32,7 +32,6 @@ func TestFieldHelpers(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.field.Key != tt.wantKey {
 				t.Fatalf("expected key %s, got %s", tt.wantKey, tt.field.Key)

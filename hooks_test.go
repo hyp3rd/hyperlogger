@@ -296,8 +296,10 @@ func TestHookRegistry(t *testing.T) {
 		registry := NewHookRegistry()
 
 		callCount := 0
+
 		registry.AddFunc(InfoLevel, func(ctx context.Context, entry *Entry) error {
 			callCount++
+
 			if ctx == nil {
 				t.Fatal("expected context to be propagated")
 			}
@@ -315,6 +317,7 @@ func TestHookRegistry(t *testing.T) {
 		}
 
 		registry.RemoveFuncs(InfoLevel)
+
 		errs = registry.Dispatch(context.Background(), &Entry{Level: InfoLevel})
 		if len(errs) != 0 {
 			t.Fatalf("expected no errors after removal, got %d", len(errs))
@@ -383,12 +386,14 @@ func TestStandardHook(t *testing.T) {
 
 func TestFireRegisteredHooks(t *testing.T) {
 	defer UnregisterAllHooks()
+
 	UnregisterAllHooks()
 
 	called := false
 
 	RegisterHook(InfoLevel, func(ctx context.Context, entry *Entry) error {
 		called = true
+
 		if ctx == nil {
 			t.Fatalf("expected context to be propagated")
 		}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/hyp3rd/ewrap"
 
+	"github.com/hyp3rd/hyperlogger"
 	"github.com/hyp3rd/hyperlogger/internal/constants"
 )
 
@@ -25,6 +26,8 @@ type AsyncConfig struct {
 	OverflowStrategy AsyncOverflowStrategy
 	// DropHandler is invoked with the dropped payload when overflow strategy discards logs.
 	DropHandler func([]byte)
+	// DropPayloadHandler receives drop notifications with ownership semantics.
+	DropPayloadHandler hyperlogger.DropPayloadHandler
 	// MetricsReporter receives periodic metrics about the async writer state.
 	MetricsReporter func(AsyncMetrics)
 	// RetryEnabled enables retry attempts on write failures.
@@ -42,15 +45,16 @@ type AsyncConfig struct {
 // AsyncWriter implements asynchronous writing to an io.Writer,
 // buffering writes through a channel to decouple logging from I/O operations.
 type AsyncWriter struct {
-	out        io.Writer
-	config     AsyncConfig
-	msgCh      chan []byte
-	stopCh     chan struct{}
-	flushCh    chan chan struct{}
-	wg         sync.WaitGroup
-	closed     bool
-	closeMutex sync.Mutex
-	metricsMu  sync.Mutex
+	out         io.Writer
+	config      AsyncConfig
+	msgCh       chan *asyncPayload
+	stopCh      chan struct{}
+	flushCh     chan chan struct{}
+	wg          sync.WaitGroup
+	closed      bool
+	closeMutex  sync.Mutex
+	metricsMu   sync.Mutex
+	payloadPool *sync.Pool
 
 	enqueuedCount  atomic.Uint64
 	processedCount atomic.Uint64
@@ -89,6 +93,11 @@ const (
 	defaultRetryBackoff = 10
 )
 
+type asyncPayload struct {
+	data    []byte
+	storage *[]byte
+}
+
 // NewAsyncWriter creates a new AsyncWriter that writes to the given writer asynchronously.
 func NewAsyncWriter(out io.Writer, config AsyncConfig) *AsyncWriter {
 	// Set defaults for config if needed
@@ -124,12 +133,26 @@ func NewAsyncWriter(out io.Writer, config AsyncConfig) *AsyncWriter {
 		config.RetryMaxBackoff = config.RetryBackoff * defaultRetryBackoff
 	}
 
+	initialPayloadCap := defaultBufferSize
+	if config.BufferSize > initialPayloadCap {
+		initialPayloadCap = config.BufferSize
+	}
+
+	payloadPool := &sync.Pool{
+		New: func() any {
+			buf := make([]byte, 0, initialPayloadCap)
+
+			return &buf
+		},
+	}
+
 	aw := &AsyncWriter{
-		out:     out,
-		config:  config,
-		msgCh:   make(chan []byte, config.BufferSize),
-		stopCh:  make(chan struct{}),
-		flushCh: make(chan chan struct{}, 1),
+		out:         out,
+		config:      config,
+		msgCh:       make(chan *asyncPayload, config.BufferSize),
+		stopCh:      make(chan struct{}),
+		flushCh:     make(chan chan struct{}, 1),
+		payloadPool: payloadPool,
 	}
 
 	aw.start()
@@ -152,23 +175,24 @@ func (w *AsyncWriter) Write(data []byte) (int, error) {
 		return 0, ErrWriterClosed
 	}
 
-	buf := make([]byte, len(data))
-	copy(buf, data)
+	payload := w.borrowPayload(data)
 
 	//nolint:exhaustive // AsyncOverflowDropNewest is the default behaviour
 	switch w.config.OverflowStrategy {
 	case AsyncOverflowBlock:
 		select {
-		case w.msgCh <- buf:
+		case w.msgCh <- payload:
 			w.enqueuedCount.Add(1)
 			w.reportMetrics()
 
 			return len(data), nil
 		case <-w.stopCh:
+			w.releasePayload(payload)
+
 			return 0, ErrWriterClosed
 		}
 	case AsyncOverflowDropOldest:
-		if w.tryEnqueue(buf) {
+		if w.tryEnqueue(payload) {
 			w.reportMetrics()
 
 			return len(data), nil
@@ -176,31 +200,31 @@ func (w *AsyncWriter) Write(data []byte) (int, error) {
 
 		w.discardOldest()
 
-		if w.tryEnqueue(buf) {
+		if w.tryEnqueue(payload) {
 			w.reportMetrics()
 
 			return len(data), nil
 		}
 
-		w.recordOverflow(buf)
+		w.recordOverflow(payload)
 
 		return 0, ErrBufferFull
 	case AsyncOverflowHandoff:
-		if w.tryEnqueue(buf) {
+		if w.tryEnqueue(payload) {
 			w.reportMetrics()
 
 			return len(data), nil
 		}
 
-		return w.writeDirect(buf)
+		return w.writeDirect(payload)
 	default:
-		if w.tryEnqueue(buf) {
+		if w.tryEnqueue(payload) {
 			w.reportMetrics()
 
 			return len(data), nil
 		}
 
-		w.recordOverflow(buf)
+		w.recordOverflow(payload)
 
 		return 0, ErrBufferFull
 	}
@@ -249,10 +273,9 @@ func (w *AsyncWriter) WriteCritical(data []byte) (int, error) {
 		return 0, ErrWriterClosed
 	}
 
-	buf := make([]byte, len(data))
-	copy(buf, data)
+	payload := w.borrowPayload(data)
 
-	return w.writeDirect(buf)
+	return w.writeDirect(payload)
 }
 
 // Close stops the background goroutine and closes the message channel.
@@ -294,44 +317,6 @@ func (w *AsyncWriter) Metrics() AsyncMetrics {
 	}
 }
 
-func (w *AsyncWriter) reportMetrics() {
-	reporter := w.config.MetricsReporter
-	if reporter == nil {
-		return
-	}
-
-	w.metricsMu.Lock()
-	defer w.metricsMu.Unlock()
-
-	reporter(w.Metrics())
-}
-
-func (w *AsyncWriter) syncUnderlying() error {
-	if syncer, ok := w.out.(interface{ Sync() error }); ok {
-		err := syncer.Sync()
-		if err != nil {
-			return ewrap.Wrap(err, "syncing underlying writer")
-		}
-	}
-
-	return nil
-}
-
-func (w *AsyncWriter) closeUnderlying() error {
-	if closer, ok := w.out.(io.Closer); ok {
-		if f, ok := closer.(*os.File); ok && isStandardStream(f) {
-			return nil
-		}
-
-		err := closer.Close()
-		if err != nil {
-			return ewrap.Wrap(err, "closing underlying writer")
-		}
-	}
-
-	return nil
-}
-
 // start begins the background writing goroutine.
 func (w *AsyncWriter) start() {
 	w.wg.Add(1)
@@ -362,11 +347,19 @@ func (w *AsyncWriter) processLogs() {
 }
 
 // writeMessage writes a single message to the underlying writer.
-func (w *AsyncWriter) writeMessage(msg []byte) {
-	err := w.performWrite(msg)
-	if err != nil {
-		w.handleWriteFailure(msg)
+func (w *AsyncWriter) writeMessage(payload *asyncPayload) {
+	if payload == nil {
+		return
 	}
+
+	err := w.performWrite(payload.data)
+	if err != nil {
+		w.handleWriteFailure(payload)
+
+		return
+	}
+
+	w.releasePayload(payload)
 }
 
 // handleFlush handles a flush request by draining pending messages before signaling completion.
@@ -391,16 +384,25 @@ func (w *AsyncWriter) handleFlush(doneCh chan struct{}) {
 	}
 }
 
-func (w *AsyncWriter) writeDirect(msg []byte) (int, error) {
-	err := w.performWrite(msg)
+func (w *AsyncWriter) writeDirect(payload *asyncPayload) (int, error) {
+	if payload == nil {
+		return 0, nil
+	}
+
+	err := w.performWrite(payload.data)
 	if err != nil {
+		w.releasePayload(payload)
+
 		return 0, err
 	}
 
 	w.bypassCount.Add(1)
 	w.reportMetrics()
 
-	return len(msg), nil
+	written := len(payload.data)
+	w.releasePayload(payload)
+
+	return written, nil
 }
 
 func (w *AsyncWriter) performWrite(msg []byte) error {
@@ -455,9 +457,9 @@ func (w *AsyncWriter) drainMessages() {
 // discardOldest removes the oldest message from the buffer to make space for a new one.
 func (w *AsyncWriter) discardOldest() {
 	select {
-	case msg, ok := <-w.msgCh:
+	case payload, ok := <-w.msgCh:
 		if ok {
-			w.config.DropHandler(msg)
+			w.handleDrop(payload)
 			w.droppedCount.Add(1)
 			w.reportMetrics()
 		}
@@ -466,8 +468,12 @@ func (w *AsyncWriter) discardOldest() {
 }
 
 // recordOverflow handles the case when a message cannot be enqueued due to a full buffer.
-func (w *AsyncWriter) recordOverflow(msg []byte) {
-	w.config.DropHandler(msg)
+func (w *AsyncWriter) recordOverflow(payload *asyncPayload) {
+	if payload == nil {
+		return
+	}
+
+	w.handleDrop(payload)
 	w.droppedCount.Add(1)
 
 	if w.config.ErrorHandler != nil {
@@ -478,9 +484,9 @@ func (w *AsyncWriter) recordOverflow(msg []byte) {
 }
 
 // tryEnqueue attempts to enqueue a message without blocking.
-func (w *AsyncWriter) tryEnqueue(buf []byte) bool {
+func (w *AsyncWriter) tryEnqueue(payload *asyncPayload) bool {
 	select {
-	case w.msgCh <- buf:
+	case w.msgCh <- payload:
 		w.enqueuedCount.Add(1)
 
 		return true
@@ -489,11 +495,214 @@ func (w *AsyncWriter) tryEnqueue(buf []byte) bool {
 	}
 }
 
-func (w *AsyncWriter) handleWriteFailure(msg []byte) {
-	if w.config.DropHandler != nil {
-		w.config.DropHandler(msg)
+func (w *AsyncWriter) handleWriteFailure(payload *asyncPayload) {
+	if payload == nil {
+		return
 	}
 
+	w.handleDrop(payload)
 	w.droppedCount.Add(1)
 	w.reportMetrics()
 }
+
+func (w *AsyncWriter) handleDrop(payload *asyncPayload) {
+	if payload == nil {
+		return
+	}
+
+	if handler := w.config.DropPayloadHandler; handler != nil {
+		dropped := newDropPayload(payload, func() {
+			w.releasePayload(payload)
+		})
+		handler(dropped)
+		dropped.releaseIfNeeded()
+
+		return
+	}
+
+	if w.config.DropHandler != nil {
+		w.config.DropHandler(payload.data)
+	}
+
+	w.releasePayload(payload)
+}
+
+func (w *AsyncWriter) borrowPayload(src []byte) *asyncPayload {
+	size := len(src)
+
+	var storage *[]byte
+
+	if pool := w.payloadPool; pool != nil {
+		if raw := pool.Get(); raw != nil {
+			if candidate, ok := raw.(*[]byte); ok && candidate != nil {
+				storage = candidate
+			}
+		}
+	}
+
+	if storage == nil {
+		buf := make([]byte, 0, size)
+		storage = &buf
+	}
+
+	data := *storage
+	if cap(data) < size {
+		data = make([]byte, size)
+	}
+
+	data = data[:size]
+	copy(data, src)
+	*storage = data
+
+	return &asyncPayload{
+		data:    data,
+		storage: storage,
+	}
+}
+
+func (w *AsyncWriter) releasePayload(payload *asyncPayload) {
+	if payload == nil || payload.storage == nil {
+		return
+	}
+
+	buf := *payload.storage
+	buf = buf[:0]
+	*payload.storage = buf
+
+	if pool := w.payloadPool; pool != nil {
+		pool.Put(payload.storage)
+	}
+
+	payload.storage = nil
+	payload.data = nil
+}
+
+func (w *AsyncWriter) reportMetrics() {
+	reporter := w.config.MetricsReporter
+	if reporter == nil {
+		return
+	}
+
+	w.metricsMu.Lock()
+	defer w.metricsMu.Unlock()
+
+	reporter(w.Metrics())
+}
+
+func (w *AsyncWriter) syncUnderlying() error {
+	if syncer, ok := w.out.(interface{ Sync() error }); ok {
+		err := syncer.Sync()
+		if err != nil {
+			return ewrap.Wrap(err, "syncing underlying writer")
+		}
+	}
+
+	return nil
+}
+
+func (w *AsyncWriter) closeUnderlying() error {
+	if closer, ok := w.out.(io.Closer); ok {
+		if f, ok := closer.(*os.File); ok && isStandardStream(f) {
+			return nil
+		}
+
+		err := closer.Close()
+		if err != nil {
+			return ewrap.Wrap(err, "closing underlying writer")
+		}
+	}
+
+	return nil
+}
+
+type payloadLease struct {
+	bytes   []byte
+	release func()
+	once    sync.Once
+}
+
+func (l *payloadLease) Bytes() []byte {
+	return l.bytes
+}
+
+func (l *payloadLease) Release() {
+	l.once.Do(func() {
+		if l.release != nil {
+			l.release()
+		}
+	})
+	l.bytes = nil
+}
+
+type noOpLease struct {
+	bytes []byte
+}
+
+func (n *noOpLease) Bytes() []byte {
+	return n.bytes
+}
+
+func (n *noOpLease) Release() {
+	n.bytes = nil
+}
+
+type dropPayload struct {
+	data     []byte
+	release  func()
+	once     sync.Once
+	retained atomic.Bool
+}
+
+func newDropPayload(payload *asyncPayload, release func()) *dropPayload {
+	return &dropPayload{
+		data:    payload.data,
+		release: release,
+	}
+}
+
+func (p *dropPayload) Bytes() []byte {
+	return p.data
+}
+
+func (p *dropPayload) Size() int {
+	return len(p.data)
+}
+
+func (p *dropPayload) AppendTo(dst []byte) []byte {
+	return append(dst, p.data...)
+}
+
+func (p *dropPayload) Retain() hyperlogger.PayloadLease {
+	if !p.retained.CompareAndSwap(false, true) {
+		return &noOpLease{bytes: p.data}
+	}
+
+	return &payloadLease{
+		bytes: p.data,
+		release: func() {
+			p.callRelease()
+		},
+	}
+}
+
+func (p *dropPayload) releaseIfNeeded() {
+	if p.retained.Load() {
+		return
+	}
+
+	p.callRelease()
+}
+
+func (p *dropPayload) callRelease() {
+	p.once.Do(func() {
+		if p.release != nil {
+			p.release()
+		}
+	})
+}
+
+var (
+	_ hyperlogger.PayloadLease = (*payloadLease)(nil)
+	_ hyperlogger.PayloadLease = (*noOpLease)(nil)
+	_ hyperlogger.DropPayload  = (*dropPayload)(nil)
+)

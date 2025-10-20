@@ -476,6 +476,10 @@ type MultiWriter struct {
 	Writers []Writer
 	// Add a debug name for each writer to help with diagnostics
 	writerNames map[Writer]string
+
+	useDual bool
+	first   Writer
+	second  Writer
 }
 
 // NewMultiWriter creates a new writer that writes to all provided writers.
@@ -501,16 +505,28 @@ func NewMultiWriter(writers ...Writer) (*MultiWriter, error) {
 		return nil, ewrap.New("no valid writers provided")
 	}
 
-	return &MultiWriter{
+	mw := &MultiWriter{
 		Writers:     validWriters,
 		writerNames: writerNames,
-	}, nil
+	}
+
+	if len(validWriters) == 2 {
+		mw.useDual = true
+		mw.first = validWriters[0]
+		mw.second = validWriters[1]
+	}
+
+	return mw, nil
 }
 
 // Write sends the output to all writers with detailed diagnostics.
 func (mw *MultiWriter) Write(payload []byte) (int, error) {
 	mw.mu.RLock()
 	defer mw.mu.RUnlock()
+
+	if mw.useDual {
+		return mw.writeDualLocked(payload)
+	}
 
 	return mw.writeToWriters(payload)
 }
@@ -573,6 +589,9 @@ func (mw *MultiWriter) Close() error {
 	}
 
 	mw.Writers = nil
+	mw.useDual = false
+	mw.first = nil
+	mw.second = nil
 
 	if len(closeErrors) > 0 {
 		return ewrap.New("close operation partially failed").
@@ -593,6 +612,12 @@ func (mw *MultiWriter) AddWriter(writer Writer) error {
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
 
+	if mw.useDual {
+		mw.useDual = false
+		mw.first = nil
+		mw.second = nil
+	}
+
 	// Check for duplicates
 	for _, existing := range mw.Writers {
 		if existing == writer {
@@ -602,6 +627,16 @@ func (mw *MultiWriter) AddWriter(writer Writer) error {
 
 	mw.Writers = append(mw.Writers, writer)
 	mw.writerNames[writer] = fmt.Sprintf("%T[%d]", writer, len(mw.Writers)-1)
+
+	if len(mw.Writers) == 2 {
+		mw.useDual = true
+		mw.first = mw.Writers[0]
+		mw.second = mw.Writers[1]
+	} else {
+		mw.useDual = false
+		mw.first = nil
+		mw.second = nil
+	}
 
 	return nil
 }
@@ -627,6 +662,16 @@ func (mw *MultiWriter) RemoveWriter(writer Writer) {
 			break
 		}
 	}
+
+	if len(mw.Writers) == 2 {
+		mw.useDual = true
+		mw.first = mw.Writers[0]
+		mw.second = mw.Writers[1]
+	} else {
+		mw.useDual = false
+		mw.first = nil
+		mw.second = nil
+	}
 }
 
 // writeToWriters writes the payload to all writers in the MultiWriter, tracking the results of each write.
@@ -640,6 +685,56 @@ func (mw *MultiWriter) writeToWriters(payload []byte) (int, error) {
 	failedWrites, incompleteWrites, successCount := mw.writeToEachWriter(payload)
 
 	return mw.prepareResult(payload, failedWrites, incompleteWrites, successCount)
+}
+
+func (mw *MultiWriter) writeDualLocked(payload []byte) (int, error) {
+	if mw.first == nil && mw.second == nil {
+		return 0, nil
+	}
+
+	var (
+		failed     [2]string
+		incomplete [2]string
+	)
+
+	failedCount := 0
+	incompleteCount := 0
+	successCount := 0
+	totalBytes := len(payload)
+
+	writers := [2]Writer{mw.first, mw.second}
+
+	for _, writer := range writers {
+		if writer == nil {
+			continue
+		}
+
+		writerName := mw.getWriterName(writer)
+		bytesWritten, err := writer.Write(payload)
+
+		switch {
+		case err != nil:
+			failed[failedCount] = fmt.Sprintf("%s: %v", writerName, err)
+			failedCount++
+		case bytesWritten != totalBytes:
+			incomplete[incompleteCount] = fmt.Sprintf(
+				"%s: wrote %d/%d bytes",
+				writerName,
+				bytesWritten,
+				totalBytes,
+			)
+			incompleteCount++
+		default:
+			successCount++
+		}
+	}
+
+	return mw.prepareResult(
+		payload,
+		failed[:failedCount],
+		incomplete[:incompleteCount],
+		successCount,
+	)
 }
 
 // writeToEachWriter attempts to write the payload to each writer and tracks results.

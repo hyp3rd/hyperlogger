@@ -20,12 +20,6 @@ func (*consoleEncoder) Encode(entry *hyperlogger.Entry, cfg *hyperlogger.Config,
 		return nil, ewrap.New("entry cannot be nil")
 	}
 
-	if buf == nil {
-		buf = bytes.NewBuffer(nil)
-	} else {
-		buf.Reset()
-	}
-
 	formatConsoleOutput(buf, entry, cfg)
 
 	return buf.Bytes(), nil
@@ -44,12 +38,6 @@ type jsonEncoder struct{}
 func (*jsonEncoder) Encode(entry *hyperlogger.Entry, cfg *hyperlogger.Config, buf *bytes.Buffer) ([]byte, error) {
 	if entry == nil {
 		return nil, ewrap.New("entry cannot be nil")
-	}
-
-	if buf == nil {
-		buf = bytes.NewBuffer(nil)
-	} else {
-		buf.Reset()
 	}
 
 	formatJSONOutput(buf, entry, cfg)
