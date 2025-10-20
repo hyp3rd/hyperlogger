@@ -20,8 +20,8 @@ For WithAsyncMetricsHandler, current wrapper builds AsyncMetrics snapshots each 
 Benchmark-driven fine tuning
 
 Add micro-benchmarks around WithFields, JSON encoding, and async bypass path to isolate allocation sources. Optimize until go test -bench BenchmarkAdapterLogging -benchmem shows ≤2 allocs for the “NoFields” case. **(New adapter benchmarks exercise console/JSON paths with and without fields; use them to track allocation goals.)**
-Run pprof heap profiles during benchmarks to confirm culprit allocations; use -alloc_space focus filters.
+Run pprof heap profiles during benchmarks to confirm culprit allocations; use -alloc_space focus filters. **(Capture heap data via `go test -run ^$ -bench BenchmarkAdapterLoggingAllocations/JSON/WithFields -benchmem -memprofile adapter_json.pprof ./pkg/adapter` and inspect with `pprof -top` to ensure only the intentional buffer allocation remains.)**
 Compiler guidance
 
-Ensure structs are stack-friendly: tag functions with //go:nosplit or //go:noinline only where it helps escape analysis (carefully measured).
-Use small value types instead of interfaces when possible (e.g., replace any with concrete types inside inner loops).
+Ensure structs are stack-friendly: tag functions with //go:nosplit or //go:noinline only where it helps escape analysis (carefully measured). **(Reviewed hot paths; current escape analysis keeps helpers on stack, additional directives not required at this time.)**
+Use small value types instead of interfaces when possible (e.g., replace any with concrete types inside inner loops). **(Field values remain `any` to preserve the public API; inner loops now operate on concrete types where practical via typed switch cases.)**
