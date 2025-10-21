@@ -75,7 +75,7 @@ prepare-toolchain:
 	pre-commit validate-config || pre-commit install && pre-commit install-hooks
 
 
-lint: prepare-toolchain vet
+lint: prepare-toolchain
 	@echo "Running gci..."
 	@for file in ${GOFILES}; do \
 		gci write -s standard -s default -s blank -s dot -s "prefix(github.com/hyp3rd/hyperlogger)" -s localmodule --skip-vendor --skip-generated $$file; \
@@ -94,7 +94,10 @@ vet:
 	@echo "Running go vet..."
 
 	$(call check_command_exists,shadow) || go install golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow@latest
-	go vet -vettool=$(which shadow)
+
+	@for file in ${GOFILES}; do \
+		go vet -vettool=$(shell which shadow) $$file; \
+	done
 
 # check_command_exists is a helper function that checks if a command exists.
 define check_command_exists
