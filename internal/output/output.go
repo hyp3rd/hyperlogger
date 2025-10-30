@@ -37,6 +37,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -619,10 +620,8 @@ func (mw *MultiWriter) AddWriter(writer Writer) error {
 	}
 
 	// Check for duplicates
-	for _, existing := range mw.Writers {
-		if existing == writer {
-			return ewrap.New("writer already exists in MultiWriter")
-		}
+	if slices.Contains(mw.Writers, writer) {
+		return ewrap.New("writer already exists in MultiWriter")
 	}
 
 	mw.Writers = append(mw.Writers, writer)

@@ -1,8 +1,8 @@
-GOLANGCI_LINT_VERSION = v2.5.0
+GOLANGCI_LINT_VERSION = v2.6.0
 
 GOFILES = $(shell find . -type f -name '*.go' -not -path "./pkg/api/*" -not -path "./vendor/*" -not -path "./.gocache/*" -not -path "./.git/*")
 
-BUF_VERSION = v1.58.0
+BUF_VERSION = v1.59.0
 
 test: test-race
 	RUN_INTEGRATION_TEST=yes go test -v -timeout 1m -cover ./...
@@ -74,6 +74,27 @@ prepare-toolchain:
 	@echo "Initializing pre-commit..."
 	pre-commit validate-config || pre-commit install && pre-commit install-hooks
 
+update-toolchain:
+	@echo "Updating buf to latest..."
+	go install github.com/bufbuild/buf/cmd/buf@latest && echo "buf version: " && buf --version
+
+	@echo "Updating protoc-gen-go..."
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+
+	@echo "Updating protoc-gen-go-grpc..."
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+	@echo "Updating protoc-gen-openapi..."
+	go install github.com/google/gnostic/cmd/protoc-gen-openapi@latest
+
+	@echo "Updating gci...\n"
+	go install github.com/daixiang0/gci@latest
+
+	@echo "Updating gofumpt...\n"
+	go install mvdan.cc/gofumpt@latest
+
+	@echo "Updating staticcheck...\n"
+	go install honnef.co/go/tools/cmd/staticcheck@latest
 
 lint: prepare-toolchain
 	@echo "Running gci..."

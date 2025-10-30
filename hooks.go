@@ -198,6 +198,7 @@ func (r *HookRegistry) GetHooksForLevel(level Level) []Hook {
 }
 
 // FireHooks triggers all hooks for a given log entry using a background context.
+//
 // Deprecated: use Dispatch to control context propagation.
 func (r *HookRegistry) FireHooks(entry *Entry) []error {
 	return r.Dispatch(context.Background(), entry)
