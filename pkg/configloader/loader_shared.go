@@ -191,7 +191,7 @@ func applyOutputDestination(cfg *hyperlogger.Config, output string) error {
 	return nil
 }
 
-func setBool(target *bool, value *bool) {
+func setBool(target, value *bool) {
 	if value == nil {
 		return
 	}

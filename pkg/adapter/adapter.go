@@ -754,7 +754,7 @@ func appendOrReplaceInPlace(fields []hyperlogger.Field, field hyperlogger.Field)
 	return append(fields, field)
 }
 
-func mergeFieldSets(base []hyperlogger.Field, extras []hyperlogger.Field) []hyperlogger.Field {
+func mergeFieldSets(base, extras []hyperlogger.Field) []hyperlogger.Field {
 	if len(base) == 0 {
 		return cloneFields(extras)
 	}
@@ -1373,7 +1373,7 @@ func (a *Adapter) borrowEncoderBuffer(entry *hyperlogger.Entry, isJSON bool) (*b
 	return buf, false
 }
 
-func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON bool, pooled bool) {
+func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON, pooled bool) {
 	if buf == nil {
 		return
 	}
@@ -1519,7 +1519,7 @@ func (a *Adapter) logHookError(err error) {
 }
 
 // predictBufferSize calculates a more accurate buffer size based on content.
-func predictBufferSize(isJSON bool, msgLen int, fieldsLen int) int {
+func predictBufferSize(isJSON bool, msgLen, fieldsLen int) int {
 	var baseSize, fieldMultiplier int
 
 	if isJSON {

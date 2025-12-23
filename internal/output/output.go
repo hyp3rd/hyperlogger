@@ -741,7 +741,7 @@ func (mw *MultiWriter) writeDualLocked(payload []byte) (int, error) {
 //nolint:nonamedreturns
 func (mw *MultiWriter) writeToEachWriter(
 	payload []byte,
-) (failedWrites []string, incompleteWrites []string, successCount int) {
+) (failedWrites, incompleteWrites []string, successCount int) {
 	totalBytes := len(payload)
 
 	for _, writer := range mw.Writers {
