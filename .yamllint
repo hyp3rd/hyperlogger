@@ -11,3 +11,4 @@ rules:
   truthy: disable
 ignore: |
   .golangci.yaml
+  **/.github/**

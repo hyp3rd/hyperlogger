@@ -43,7 +43,7 @@ import (
 // If the environment is non-production, the logger is set to debug level.
 // Otherwise, it is set to info level with JSON output.
 // The function returns the created logger instance and any error that occurred during initialization.
-func NewWithDefaults(ctx context.Context, environment string, service string) (hyperlogger.Logger, error) {
+func NewWithDefaults(ctx context.Context, environment, service string) (hyperlogger.Logger, error) {
 	// Create console writer with color support
 	consoleWriter := output.NewConsoleWriter(os.Stdout, output.ColorModeAuto)
 

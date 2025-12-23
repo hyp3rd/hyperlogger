@@ -47,7 +47,7 @@ func sanitizeSamplingRules(cfg hyperlogger.SamplingConfig) (*samplingRule, map[h
 	return defaultRule, levelRules
 }
 
-func buildDefaultSamplingRule(cfg hyperlogger.SamplingConfig) (rule *samplingRule, initial int, thereafter int) { //nolint:nonamedreturns
+func buildDefaultSamplingRule(cfg hyperlogger.SamplingConfig) (rule *samplingRule, initial, thereafter int) { //nolint:nonamedreturns
 	initial = normalizeThreshold(cfg.Initial, hyperlogger.DefaultSamplingInitial)
 	thereafter = normalizeThreshold(cfg.Thereafter, hyperlogger.DefaultSamplingThereafter)
 

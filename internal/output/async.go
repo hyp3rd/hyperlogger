@@ -133,10 +133,7 @@ func NewAsyncWriter(out io.Writer, config AsyncConfig) *AsyncWriter {
 		config.RetryMaxBackoff = config.RetryBackoff * defaultRetryBackoff
 	}
 
-	initialPayloadCap := defaultBufferSize
-	if config.BufferSize > initialPayloadCap {
-		initialPayloadCap = config.BufferSize
-	}
+	initialPayloadCap := max(config.BufferSize, defaultBufferSize)
 
 	payloadPool := &sync.Pool{
 		New: func() any {

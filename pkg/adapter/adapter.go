@@ -363,7 +363,7 @@ func (a *Adapter) WithError(err error) hyperlogger.Logger {
 
 // GetLevel returns the current logging level.
 func (a *Adapter) GetLevel() hyperlogger.Level {
-	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
+	//gosec:disable G115 -- This is a false positive
 	return hyperlogger.Level(a.level.Load())
 }
 
@@ -754,7 +754,7 @@ func appendOrReplaceInPlace(fields []hyperlogger.Field, field hyperlogger.Field)
 	return append(fields, field)
 }
 
-func mergeFieldSets(base []hyperlogger.Field, extras []hyperlogger.Field) []hyperlogger.Field {
+func mergeFieldSets(base, extras []hyperlogger.Field) []hyperlogger.Field {
 	if len(base) == 0 {
 		return cloneFields(extras)
 	}
@@ -1373,7 +1373,7 @@ func (a *Adapter) borrowEncoderBuffer(entry *hyperlogger.Entry, isJSON bool) (*b
 	return buf, false
 }
 
-func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON bool, pooled bool) {
+func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON, pooled bool) {
 	if buf == nil {
 		return
 	}
@@ -1389,9 +1389,9 @@ func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON bool, pooled bo
 
 // log handles the common logging logic for all log levels.
 //
-//nolint:cyclop // complexity is acceptable for this core function. Splitting may reduce readability.
+//nolint:cyclop
 func (a *Adapter) log(level hyperlogger.Level, msg string) {
-	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
+	//gosec:disable G115 -- This is a false positive
 	if level < hyperlogger.Level(a.level.Load()) {
 		return // Skip logging if the level is below our configured level
 	}
@@ -1519,7 +1519,7 @@ func (a *Adapter) logHookError(err error) {
 }
 
 // predictBufferSize calculates a more accurate buffer size based on content.
-func predictBufferSize(isJSON bool, msgLen int, fieldsLen int) int {
+func predictBufferSize(isJSON bool, msgLen, fieldsLen int) int {
 	var baseSize, fieldMultiplier int
 
 	if isJSON {

@@ -5,7 +5,7 @@ import (
 )
 
 // Str creates a Field with a string value.
-func Str(key string, value string) Field {
+func Str(key, value string) Field {
 	return Field{Key: key, Value: value}
 }
 

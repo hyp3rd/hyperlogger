@@ -102,10 +102,10 @@ func (w *FileWriter) compressFile(path string) {
 // It compresses the file at the given path using gzip compression.
 // The original file is removed after successful compression.
 //
-//nolint:cyclop,funlen,revive // 11 statements is acceptable for this function, a refactor would make it worse.
+//nolint:cyclop,funlen,revive
 func (w *FileWriter) performCompression(path string) error {
 	// Open the source file
-	//nolint:gosec // G304: Potential file inclusion via variable: the path is already validated by SecurePath
+	//gosec:disable G304 -- This is a false positive
 	source, err := os.Open(path)
 	if err != nil {
 		return ewrap.Wrapf(err, "opening source file").
@@ -121,7 +121,7 @@ func (w *FileWriter) performCompression(path string) error {
 
 	// Create the compressed file
 	compressedPath := path + w.compressionConfig.Extension
-	//nolint:gosec // G304: Potential file inclusion via variable: the path is already validated by SecurePath
+	//gosec:disable G304 -- This is a false positive
 	compressed, err := os.OpenFile(compressedPath, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return ewrap.Wrapf(err, "creating compressed file").
@@ -342,9 +342,11 @@ func copyWithBuffer(dst io.Writer, src io.Reader, buffer []byte) error {
 }
 
 // verifyCompressedFile verifies that a compressed file is valid.
+//
+
 func verifyCompressedFile(path string) error {
 	// Open the compressed file
-	//nolint:gosec // G304: Potential file inclusion via variable: the path is already validated by SecurePath
+	//gosec:disable G304 -- This is a false positive
 	file, err := os.Open(path)
 	if err != nil {
 		return ewrap.Wrapf(err, "opening compressed file for verification")
@@ -430,14 +432,15 @@ func CompressFile(path string, config CompressionConfig) (string, error) {
 }
 
 // compressGzip compresses a file using gzip compression.
+//
+
 func compressGzip(path string, level int) (string, error) {
 	// Open the source file
 	secPath, err := utils.SecurePath(path)
 	if err != nil {
 		return "", err
 	}
-
-	//nolint:gosec // G304: Potential file inclusion via variable: the path is already validated by SecurePath
+	//gosec:disable G304 -- This is a false positive
 	srcFile, err := os.Open(secPath)
 	if err != nil {
 		return "", ewrap.Wrap(err, "failed to open source file")
@@ -452,7 +455,7 @@ func compressGzip(path string, level int) (string, error) {
 
 	// Create the destination file
 	dstPath := secPath + ".gz"
-	//nolint:gosec // G304: Potential file inclusion via variable: the path is already validated by SecurePath.
+	//gosec:disable G304 -- This is a false positive
 	dstFile, err := os.Create(dstPath)
 	if err != nil {
 		return "", ewrap.Wrap(err, "failed to create destination file")

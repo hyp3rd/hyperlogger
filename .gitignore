@@ -381,7 +381,7 @@ $RECYCLE.BIN/
 *.lnk
 
 ### Project-specific ###
-.github/*
+.github/instructions.md
 .trunk/*
 # Grafana data volume
 observability/grafana/
