@@ -1,5 +1,11 @@
 # Hyperlogger
 
+[![Go](https://github.com/hyp3rd/hyperlogger/actions/workflows/go.yml/badge.svg)][build-link] [![CodeQL](https://github.com/hyp3rd/hyperlogger/actions/workflows/codeql.yml/badge.svg)][codeql-link] [![golangci-lint](https://github.com/hyp3rd/hyperlogger/actions/workflows/lint.yml/badge.svg)][golangci-lint-link]
+
+[build-link]: https://github.com/hyp3rd/hyperlogger/actions/workflows/go.yml
+[codeql-link]: https://github.com/hyp3rd/hyperlogger/actions/workflows/codeql.yml
+[golangci-lint-link]: https://github.com/hyp3rd/hyperlogger/actions/workflows/lint.yml
+
 A high-performance, feature-rich logging package for Go applications, focusing on reliability, contextual information, and flexibility.
 
 ## Features
