@@ -21,7 +21,7 @@ test-race:
 
 # bench runs the benchmark tests in the benchmark subpackage of the tests package.
 bench:
-	cd tests/benchmark && go test -bench=. -benchmem -benchtime=4s . -timeout 30m
+	go test -bench=. -benchtime=3s -benchmem -run=^-memprofile=mem.out ./...
 
 # run-example runs the example specified in the example variable with the optional arguments specified in the ARGS variable.
 run-example:

@@ -363,7 +363,7 @@ func (a *Adapter) WithError(err error) hyperlogger.Logger {
 
 // GetLevel returns the current logging level.
 func (a *Adapter) GetLevel() hyperlogger.Level {
-	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
+	//gosec:disable G115 -- This is a false positive
 	return hyperlogger.Level(a.level.Load())
 }
 
@@ -1389,9 +1389,9 @@ func (a *Adapter) releaseEncoderBuffer(buf *bytes.Buffer, isJSON, pooled bool) {
 
 // log handles the common logging logic for all log levels.
 //
-//nolint:cyclop // complexity is acceptable for this core function. Splitting may reduce readability.
+//nolint:cyclop
 func (a *Adapter) log(level hyperlogger.Level, msg string) {
-	//nolint:gosec // The log levels can't be changed at runtime and cause integer overflow conversion.
+	//gosec:disable G115 -- This is a false positive
 	if level < hyperlogger.Level(a.level.Load()) {
 		return // Skip logging if the level is below our configured level
 	}

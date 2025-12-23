@@ -45,11 +45,14 @@ func provideFileLogger(ctx context.Context, filePath string) (hyperlogger.Logger
 	return fileLogger, nil
 }
 
+// provideMultiOutLogger creates a logger that writes to both stdout and a file.
+//
+
 func provideMultiOutLogger(ctx context.Context) (hyperlogger.Logger, *os.File, error) {
 	multiPath := filepath.Join(os.TempDir(), "writers-example-multi.log")
 
 	// Open the file for appending, create it if it doesn't exist
-	//nolint:gosec // G304: Potential file inclusion via variable: this is an example, no user input.
+	//gosec:disable G304,G302 -- This is a false positive
 	fileHandle, err := os.OpenFile(multiPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Printf("failed to open %s: %v", multiPath, err)
