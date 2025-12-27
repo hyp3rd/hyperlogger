@@ -43,17 +43,23 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hyp3rd/hyperlogger/pkg/adapter
 cpu: Apple M2 Pro
-BenchmarkAdapterLogging/TextLogging_NoFields-12             4379250         804.9 ns/op         597 B/op            5 allocs/op
-BenchmarkAdapterLogging/TextLogging_5Fields-12              4343899         897.8 ns/op         722 B/op            5 allocs/op
-BenchmarkAdapterLogging/JSONLogging_NoFields-12             3996409         890.4 ns/op         859 B/op            6 allocs/op
-BenchmarkAdapterLogging/JSONLogging_5Fields-12              3378655        1085.0 ns/op        1091 B/op            6 allocs/op
-BenchmarkAdapterLogging/TextLogging_MultiWriter-12          4484455         811.8 ns/op         651 B/op            5 allocs/op
+BenchmarkAsyncWriter/drop_newest-12          100937802     35.46 ns/op       32 B/op        1 allocs/op
+BenchmarkAsyncWriter/drop_oldest-12          55707408      63.86 ns/op       32 B/op        1 allocs/op
+BenchmarkAsyncWriter/block-12                   14348     253723 ns/op      196 B/op        2 allocs/op
+BenchmarkAsyncWriter/handoff-12                 28059     128678 ns/op      171 B/op        2 allocs/op
 PASS
 
-BenchmarkAsyncWriter/drop_newest-12             194167740            18.48 ns/op            24 B/op         1 allocs/op
-BenchmarkAsyncWriter/drop_oldest-12              74881224            49.95 ns/op            24 B/op         1 allocs/op
-BenchmarkAsyncWriter/block-12                       14628           245278 ns/op           166 B/op         2 allocs/op
-BenchmarkAsyncWriter/handoff-12                     29034           124309 ns/op           180 B/op         2 allocs/op
+BenchmarkAdapterLoggingAllocations/Console/NoFields-12          13485333        239.1 ns/op       96 B/op        2 allocs/op
+BenchmarkAdapterLoggingAllocations/Console/WithField-12         14182243        251.9 ns/op       96 B/op        2 allocs/op
+BenchmarkAdapterLoggingAllocations/Console/WithFields-12        13647421        263.6 ns/op       96 B/op        2 allocs/op
+BenchmarkAdapterLoggingAllocations/JSON/NoFields-12             13399689        259.3 ns/op       64 B/op        1 allocs/op
+BenchmarkAdapterLoggingAllocations/JSON/WithField-12            13288815        269.2 ns/op       64 B/op        1 allocs/op
+BenchmarkAdapterLoggingAllocations/JSON/WithFields-12           12464323        288.6 ns/op       64 B/op        1 allocs/op
+BenchmarkAdapterLogging/TextLogging_NoFields-12                  5470588        712.5 ns/op      744 B/op        5 allocs/op
+BenchmarkAdapterLogging/TextLogging_5Fields-12                   5021596        756.9 ns/op      993 B/op        5 allocs/op
+BenchmarkAdapterLogging/JSONLogging_NoFields-12                  4057200        839.8 ns/op      820 B/op        5 allocs/op
+BenchmarkAdapterLogging/JSONLogging_5Fields-12                   3780207        962.4 ns/op      992 B/op        5 allocs/op
+BenchmarkAdapterLogging/TextLogging_MultiWriter-12               5229261        699.5 ns/op      865 B/op        5 allocs/op
 PASS
 ```
 
