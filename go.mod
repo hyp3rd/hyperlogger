@@ -1,12 +1,12 @@
 module github.com/hyp3rd/hyperlogger
 
-go 1.25.5
+go 1.25.6
 
 require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
-	github.com/hyp3rd/ewrap v1.3.5
+	github.com/hyp3rd/ewrap v1.3.7
 	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
