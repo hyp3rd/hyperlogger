@@ -4,7 +4,7 @@ go 1.25.6
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/go-chi/chi/v5 v5.2.4
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/gofiber/fiber/v3 v3.0.0
 	github.com/hyp3rd/ewrap v1.3.7
 	github.com/mattn/go-isatty v0.0.20
