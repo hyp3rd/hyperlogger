@@ -40,7 +40,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/hyp3rd/ewrap"
@@ -776,6 +775,8 @@ func shouldBypassSync(writer Writer) bool {
 		if f, ok := w.writer.(*os.File); ok {
 			return isStandardStream(f)
 		}
+	default:
+		return false
 	}
 
 	return false
@@ -789,6 +790,8 @@ func shouldBypassClose(writer Writer) bool {
 		if f, ok := w.writer.(*os.File); ok {
 			return isStandardStream(f)
 		}
+	default:
+		return false
 	}
 
 	return false
@@ -837,8 +840,8 @@ func (mw *MultiWriter) prepareResult(
 func (mw *MultiWriter) buildErrorMessage(failedWrites, incompleteWrites []string, successCount int) string {
 	var errMsg strings.Builder
 
-	errMsg.WriteString(fmt.Sprintf("write operation partially failed (%d/%d writers succeeded)",
-		successCount, len(mw.Writers)))
+	fmt.Fprintf(&errMsg, "write operation partially failed (%d/%d writers succeeded)",
+		successCount, len(mw.Writers))
 
 	if len(failedWrites) > 0 {
 		errMsg.WriteString("\nFailed writes:\n  ")
@@ -858,8 +861,9 @@ func (mw *MultiWriter) buildErrorMessage(failedWrites, incompleteWrites []string
 // whether to enable color support for log output.
 func IsTerminal(w io.Writer) bool {
 	if f, ok := w.(*os.File); ok {
-		if f.Fd() == uintptr(syscall.Stdout) || f.Fd() == uintptr(syscall.Stderr) {
-			return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
+		fd := f.Fd()
+		if fd == os.Stdout.Fd() || fd == os.Stderr.Fd() {
+			return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 		}
 	}
 
