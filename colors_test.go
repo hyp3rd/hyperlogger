@@ -7,6 +7,8 @@ import (
 )
 
 func TestDefaultLevelColors(t *testing.T) {
+	const expectedLevelColorCount = 6
+
 	colors := DefaultLevelColors()
 
 	assert.Equal(t, Magenta, colors[TraceLevel])
@@ -15,7 +17,7 @@ func TestDefaultLevelColors(t *testing.T) {
 	assert.Equal(t, Yellow, colors[WarnLevel])
 	assert.Equal(t, Red, colors[ErrorLevel])
 	assert.Equal(t, BoldRed, colors[FatalLevel])
-	assert.Len(t, colors, 6)
+	assert.Len(t, colors, expectedLevelColorCount)
 }
 
 func TestDefaultColorConfig(t *testing.T) {

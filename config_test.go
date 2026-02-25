@@ -57,7 +57,10 @@ func TestSetOutput(t *testing.T) {
 			setupFile:   true,
 			permissions: 0o644, // This is correct - represents real-world permissions
 			cleanup: func() {
-				os.Remove(filepath.Join(os.TempDir(), "test.log"))
+				err := os.Remove(filepath.Join(os.TempDir(), "test.log"))
+				if err != nil && !os.IsNotExist(err) {
+					panic(err)
+				}
 			},
 		},
 		{
@@ -95,7 +98,7 @@ func TestSetOutput(t *testing.T) {
 				info, err := file.Stat()
 				require.NoError(t, err)
 				assert.Equal(t, tt.permissions, info.Mode().Perm())
-				file.Close()
+				require.NoError(t, file.Close())
 			}
 		})
 	}

@@ -23,11 +23,13 @@ func TestFileWriter_CompressFile(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	defer writer.Close()
+	defer func() {
+		require.NoError(t, writer.Close())
+	}()
 
 	// Write test data
 	testData := []byte("test log data for compression")
-	err = os.WriteFile(logPath, testData, 0o644)
+	err = os.WriteFile(logPath, testData, 0o600)
 	require.NoError(t, err)
 
 	// Trigger compression
@@ -36,22 +38,27 @@ func TestFileWriter_CompressFile(t *testing.T) {
 	// Check compressed file exists
 	compressedPath := logPath + ".gz"
 	_, err = os.Stat(compressedPath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify original file is removed
 	_, err = os.Stat(logPath)
 	assert.True(t, os.IsNotExist(err))
 
 	// Read and verify compressed content
+	// #nosec G304 -- test reads a file created in a temporary directory
 	compressedFile, err := os.Open(compressedPath)
 	require.NoError(t, err)
 
-	defer compressedFile.Close()
+	defer func() {
+		require.NoError(t, compressedFile.Close())
+	}()
 
 	gzReader, err := gzip.NewReader(compressedFile)
 	require.NoError(t, err)
 
-	defer gzReader.Close()
+	defer func() {
+		require.NoError(t, gzReader.Close())
+	}()
 
 	decompressed, err := io.ReadAll(gzReader)
 	require.NoError(t, err)
@@ -59,6 +66,11 @@ func TestFileWriter_CompressFile(t *testing.T) {
 }
 
 func TestCopyWithBuffer(t *testing.T) {
+	const (
+		defaultBufferSize = 32
+		largeInputSize    = 100
+	)
+
 	tests := []struct {
 		name        string
 		input       []byte
@@ -68,17 +80,17 @@ func TestCopyWithBuffer(t *testing.T) {
 		{
 			name:       "copy empty data",
 			input:      make([]byte, 0), // Explicitly create empty slice
-			bufferSize: 32,
+			bufferSize: defaultBufferSize,
 		},
 		{
 			name:       "copy data larger than buffer",
-			input:      bytes.Repeat([]byte("a"), 100),
-			bufferSize: 32,
+			input:      bytes.Repeat([]byte("a"), largeInputSize),
+			bufferSize: defaultBufferSize,
 		},
 		{
 			name:       "copy empty data",
 			input:      []byte{},
-			bufferSize: 32,
+			bufferSize: defaultBufferSize,
 		},
 	}
 
@@ -92,7 +104,7 @@ func TestCopyWithBuffer(t *testing.T) {
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, tt.input, dst.Bytes())
 			}
 		})
@@ -104,18 +116,24 @@ func TestVerifyCompressedFile(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupFile   func(string) string
+		setupFile   func(*testing.T, string) string
 		expectError bool
 	}{
 		{
 			name: "valid compressed file",
-			setupFile: func(dir string) string {
+			setupFile: func(t *testing.T, dir string) string {
+				t.Helper()
+
 				path := filepath.Join(dir, "valid.gz")
-				f, _ := os.Create(path)
+				// #nosec G304 -- test creates a file in a temporary directory
+				f, err := os.Create(path)
+				require.NoError(t, err)
+
 				gw := gzip.NewWriter(f)
-				gw.Write([]byte("test data"))
-				gw.Close()
-				f.Close()
+				_, err = gw.Write([]byte("test data"))
+				require.NoError(t, err)
+				require.NoError(t, gw.Close())
+				require.NoError(t, f.Close())
 
 				return path
 			},
@@ -123,10 +141,14 @@ func TestVerifyCompressedFile(t *testing.T) {
 		},
 		{
 			name: "empty file",
-			setupFile: func(dir string) string {
+			setupFile: func(t *testing.T, dir string) string {
+				t.Helper()
+
 				path := filepath.Join(dir, "empty.gz")
-				f, _ := os.Create(path)
-				f.Close()
+				// #nosec G304 -- test creates a file in a temporary directory
+				f, err := os.Create(path)
+				require.NoError(t, err)
+				require.NoError(t, f.Close())
 
 				return path
 			},
@@ -134,9 +156,12 @@ func TestVerifyCompressedFile(t *testing.T) {
 		},
 		{
 			name: "invalid gzip file",
-			setupFile: func(dir string) string {
+			setupFile: func(t *testing.T, dir string) string {
+				t.Helper()
+
 				path := filepath.Join(dir, "invalid.gz")
-				os.WriteFile(path, []byte("not a gzip file"), 0o644)
+				err := os.WriteFile(path, []byte("not a gzip file"), 0o600)
+				require.NoError(t, err)
 
 				return path
 			},
@@ -144,7 +169,7 @@ func TestVerifyCompressedFile(t *testing.T) {
 		},
 		{
 			name: "non-existent file",
-			setupFile: func(dir string) string {
+			setupFile: func(_ *testing.T, dir string) string {
 				return filepath.Join(dir, "nonexistent.gz")
 			},
 			expectError: true,
@@ -153,13 +178,13 @@ func TestVerifyCompressedFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := tt.setupFile(tempDir)
+			path := tt.setupFile(t, tempDir)
 
 			err := verifyCompressedFile(path)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 		})
 	}

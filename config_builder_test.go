@@ -160,7 +160,8 @@ func TestWithForceColors(t *testing.T) {
 }
 
 func TestWithAsyncBufferSize(t *testing.T) {
-	size := 2000
+	const size = 2000
+
 	config := NewConfigBuilder().WithAsyncBufferSize(size).Build()
 
 	if config.AsyncBufferSize != size {
@@ -218,7 +219,7 @@ func TestWithAsyncDropPayloadHandler(t *testing.T) {
 
 func TestWithAsyncMetricsHandler(t *testing.T) {
 	called := false
-	config := NewConfigBuilder().WithAsyncMetricsHandler(func(ctx context.Context, metrics AsyncMetrics) {
+	config := NewConfigBuilder().WithAsyncMetricsHandler(func(_ context.Context, _ AsyncMetrics) {
 		called = true
 	}).Build()
 
@@ -254,10 +255,12 @@ func TestWithContextExtractor(t *testing.T) {
 		t.Fatalf("expected 1 extractor, got %d", len(config.ContextExtractors))
 	}
 
-	ctx := context.WithValue(context.Background(), ctxKey{}, "value")
+	const expectedValue = "value"
+
+	ctx := context.WithValue(context.Background(), ctxKey{}, expectedValue)
 
 	fields := config.ContextExtractors[0](ctx)
-	if !saw || len(fields) != 1 || fields[0].Value != "value" {
+	if !saw || len(fields) != 1 || fields[0].Value != expectedValue {
 		t.Fatalf("context extractor not invoked correctly: %+v", fields)
 	}
 }
@@ -274,11 +277,11 @@ func TestWithEncoderAndEncoderName(t *testing.T) {
 		Build()
 
 	if cfg.Encoder != encoder {
-		t.Fatalf("expected encoder to be set")
+		t.Fatal("expected encoder to be set")
 	}
 
 	if cfg.EncoderName != "custom" {
-		t.Fatalf("expected encoder name to be set")
+		t.Fatal("expected encoder name to be set")
 	}
 }
 
@@ -312,11 +315,11 @@ func TestWithFields(t *testing.T) {
 
 type mockEncoder struct{}
 
-func (m *mockEncoder) Encode(*Entry, *Config, *bytes.Buffer) ([]byte, error) {
+func (*mockEncoder) Encode(*Entry, *Config, *bytes.Buffer) ([]byte, error) {
 	return []byte("encoded"), nil
 }
 
-func (m *mockEncoder) EstimateSize(*Entry) int {
+func (*mockEncoder) EstimateSize(*Entry) int {
 	return 0
 }
 
@@ -349,7 +352,9 @@ func TestWithSampling(t *testing.T) {
 		t.Error("WithSampling did not enable sampling")
 	}
 
-	if config.Sampling.Initial != 100 {
+	const expectedInitial = 100
+
+	if config.Sampling.Initial != expectedInitial {
 		t.Error("WithSampling did not set initial correctly")
 	}
 
@@ -363,7 +368,12 @@ func TestWithSampling(t *testing.T) {
 }
 
 func TestWithSamplingRule(t *testing.T) {
-	rule := SamplingRule{Enabled: true, Initial: 5, Thereafter: 3}
+	const (
+		ruleInitial    = 5
+		ruleThereafter = 3
+	)
+
+	rule := SamplingRule{Enabled: true, Initial: ruleInitial, Thereafter: ruleThereafter}
 	config := NewConfigBuilder().WithSampling(true, 100, 10, false).
 		WithSamplingRule(InfoLevel, rule).
 		Build()
@@ -374,10 +384,10 @@ func TestWithSamplingRule(t *testing.T) {
 
 	stored, ok := config.Sampling.Rules[InfoLevel]
 	if !ok {
-		t.Fatalf("expected rule for info level")
+		t.Fatal("expected rule for info level")
 	}
 
-	if stored.Initial != 5 || stored.Thereafter != 3 || !stored.Enabled {
+	if stored.Initial != ruleInitial || stored.Thereafter != ruleThereafter || !stored.Enabled {
 		t.Fatalf("unexpected rule stored: %+v", stored)
 	}
 }
@@ -400,7 +410,8 @@ func TestWithHook(t *testing.T) {
 }
 
 func TestWithFileCompression(t *testing.T) {
-	level := 5
+	const level = 5
+
 	config := NewConfigBuilder().WithFileCompression(level).Build()
 
 	if config.File.CompressionLevel != level {
@@ -409,7 +420,8 @@ func TestWithFileCompression(t *testing.T) {
 }
 
 func TestWithFileRetention(t *testing.T) {
-	maxAge := 7
+	const maxAge = 7
+
 	maxFiles := 10
 	config := NewConfigBuilder().WithFileRetention(maxAge, maxFiles).Build()
 
@@ -564,4 +576,4 @@ func (n *noopLease) Bytes() []byte {
 	return n.data
 }
 
-func (n *noopLease) Release() {}
+func (*noopLease) Release() {}

@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -80,43 +81,45 @@ func TestAdapter_WithContext(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		ctx            context.Context
+		ctxFactory     func() context.Context
 		expectedFields int
 	}{
 		{
 			name:           "nil context",
-			ctx:            nil,
+			ctxFactory:     func() context.Context { return nil },
 			expectedFields: 0,
 		},
 		{
 			name:           "empty context",
-			ctx:            context.Background(),
+			ctxFactory:     context.Background,
 			expectedFields: 0,
 		},
 		{
 			name:           "context with trace_id",
-			ctx:            context.WithValue(context.Background(), constants.TraceKey{}, "123"),
+			ctxFactory:     func() context.Context { return context.WithValue(context.Background(), constants.TraceKey{}, "123") },
 			expectedFields: 1,
 		},
 		{
 			name:           "context with request_id",
-			ctx:            context.WithValue(context.Background(), constants.RequestKey{}, "456"),
+			ctxFactory:     func() context.Context { return context.WithValue(context.Background(), constants.RequestKey{}, "456") },
 			expectedFields: 1,
 		},
 		{
 			name: "context with both ids",
-			ctx: context.WithValue(
-				context.WithValue(context.Background(), constants.TraceKey{}, "123"),
-				constants.RequestKey{},
-				"456",
-			),
+			ctxFactory: func() context.Context {
+				return context.WithValue(
+					context.WithValue(context.Background(), constants.TraceKey{}, "123"),
+					constants.RequestKey{},
+					"456",
+				)
+			},
 			expectedFields: 2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			contextLogger := adapter.WithContext(tt.ctx)
+			contextLogger := adapter.WithContext(tt.ctxFactory())
 			require.NotNil(t, contextLogger)
 		})
 	}
@@ -207,6 +210,8 @@ func TestAdapter_LevelManagement(t *testing.T) {
 			assert.Equal(t, tt.setLevel, adapter.GetLevel())
 
 			switch tt.logLevel {
+			case hyperlogger.TraceLevel, hyperlogger.WarnLevel, hyperlogger.FatalLevel:
+				t.Fatalf("unsupported log level in test case: %v", tt.logLevel)
 			case hyperlogger.InfoLevel:
 				adapter.Info(tt.logMsg)
 			case hyperlogger.DebugLevel:
@@ -408,7 +413,8 @@ func TestAdapter_BufferPooling(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	adapterImpl := adapter.(*Adapter)
+	adapterImpl, ok := adapter.(*Adapter)
+	require.True(t, ok)
 
 	tests := []struct {
 		name         string
@@ -508,6 +514,8 @@ func TestAdapter_JSONFormatting(t *testing.T) {
 			}
 
 			switch tt.level {
+			case hyperlogger.TraceLevel, hyperlogger.DebugLevel, hyperlogger.FatalLevel:
+				t.Fatalf("unsupported level in test case: %v", tt.level)
 			case hyperlogger.InfoLevel:
 				adapter.Info(tt.message)
 			case hyperlogger.ErrorLevel:
@@ -521,16 +529,16 @@ func TestAdapter_JSONFormatting(t *testing.T) {
 				assert.Contains(t, output, contains)
 			}
 
-			// Verify it's valid JSON
-			err = ewrap.New("test") // Reset err
-
 			lines := bytes.SplitSeq(buf.Bytes(), []byte("\n"))
 			for line := range lines {
-				if len(line) > 0 {
-					err = ewrap.Newf("invalid JSON: %s", string(line))
-
-					break
+				if len(line) == 0 {
+					continue
 				}
+
+				var decoded map[string]any
+
+				err = json.Unmarshal(line, &decoded)
+				require.NoError(t, err, "invalid JSON: %s", string(line))
 			}
 		})
 	}
@@ -737,7 +745,7 @@ func TestAdapter_AsyncMetricsHandler(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	_ = loggerInstance.Sync()
+	require.NoError(t, loggerInstance.Sync())
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -882,6 +890,7 @@ func TestAdapter_FileOutputConfiguration(t *testing.T) {
 	loggerInstance.Info("file-test-entry")
 	require.NoError(t, loggerInstance.Sync())
 
+	// #nosec G304 -- test reads a file created in a temporary directory
 	contents, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(contents), "file-test-entry")
@@ -908,8 +917,8 @@ func TestAdapter_LevelConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := range goroutines {
-		go func(idx int) {
+	for range goroutines {
+		go func() {
 			defer wg.Done()
 
 			for j := range iterations {
@@ -917,7 +926,7 @@ func TestAdapter_LevelConcurrency(t *testing.T) {
 				loggerInstance.SetLevel(level)
 				_ = loggerInstance.GetLevel()
 			}
-		}(i)
+		}()
 	}
 
 	wg.Wait()
@@ -1273,7 +1282,10 @@ func BenchmarkAdapterLogging(b *testing.B) {
 
 			// Ensure logs are processed
 			if adapter, ok := log.(*Adapter); ok {
-				adapter.Sync()
+				err := adapter.Sync()
+				if err != nil {
+					b.Fatalf("Sync failed: %v", err)
+				}
 			}
 		})
 	}
