@@ -79,15 +79,19 @@ func TestSecurePathSymlink(t *testing.T) {
 	symlinkPath := filepath.Join(tempDir, "symlink.txt")
 
 	// Create a test file
-	err := os.WriteFile(validPath, []byte("test"), 0o644)
+	err := os.WriteFile(validPath, []byte("test"), 0o600)
 	require.NoError(t, err)
 
-	defer os.Remove(validPath)
+	defer func() {
+		require.NoError(t, os.Remove(validPath))
+	}()
 
 	// Create a symlink pointing outside temp directory
 	err = os.Symlink("/etc/hosts", symlinkPath)
 	if err == nil {
-		defer os.Remove(symlinkPath)
+		defer func() {
+			require.NoError(t, os.Remove(symlinkPath))
+		}()
 
 		t.Run("symlink outside temp directory", func(t *testing.T) {
 			_, err := SecurePath("symlink.txt")

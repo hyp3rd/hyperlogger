@@ -29,6 +29,17 @@ func (m *mockHook) Levels() []Level {
 	return m.levels
 }
 
+const invalidTestLevel = 100
+
+func mustAddHook(t *testing.T, registry *HookRegistry, name string, hook Hook) {
+	t.Helper()
+
+	err := registry.AddHook(name, hook)
+	if err != nil {
+		t.Fatalf("AddHook(%q) failed: %v", name, err)
+	}
+}
+
 func TestRegisterHook(t *testing.T) {
 	// Clean up hooks before and after test
 	defer UnregisterAllHooks()
@@ -36,7 +47,7 @@ func TestRegisterHook(t *testing.T) {
 	UnregisterAllHooks()
 
 	callCount := 0
-	testHook := func(ctx context.Context, entry *Entry) error {
+	testHook := func(_ context.Context, _ *Entry) error {
 		callCount++
 
 		return nil
@@ -66,7 +77,7 @@ func TestRegisterHook(t *testing.T) {
 
 	// Test invalid level (should register for all levels)
 	UnregisterAllHooks()
-	RegisterHook(Level(100), testHook)
+	RegisterHook(Level(invalidTestLevel), testHook)
 
 	globalHookRegistry.mu.RLock()
 
@@ -86,7 +97,7 @@ func TestRegisterGlobalHook(t *testing.T) {
 	UnregisterAllHooks()
 
 	callCount := 0
-	testHook := func(ctx context.Context, entry *Entry) error {
+	testHook := func(_ context.Context, _ *Entry) error {
 		callCount++
 
 		return nil
@@ -111,7 +122,7 @@ func TestUnregisterHooks(t *testing.T) {
 
 	UnregisterAllHooks()
 
-	testHook := func(ctx context.Context, entry *Entry) error {
+	testHook := func(_ context.Context, _ *Entry) error {
 		return nil
 	}
 
@@ -119,7 +130,7 @@ func TestUnregisterHooks(t *testing.T) {
 	RegisterGlobalHook(testHook)
 
 	// Unregister for invalid level (should do nothing)
-	UnregisterHooks(Level(100))
+	UnregisterHooks(Level(invalidTestLevel))
 
 	globalHookRegistry.mu.RLock()
 
@@ -137,7 +148,7 @@ func TestUnregisterHooks(t *testing.T) {
 	globalHookRegistry.mu.RLock()
 
 	if _, exists := globalHookRegistry.funcs[InfoLevel]; exists {
-		t.Errorf("Expected hooks to be unregistered for InfoLevel")
+		t.Error("Expected hooks to be unregistered for InfoLevel")
 	}
 
 	globalHookRegistry.mu.RUnlock()
@@ -145,7 +156,7 @@ func TestUnregisterHooks(t *testing.T) {
 
 func TestUnregisterAllHooks(t *testing.T) {
 	// Register hooks
-	RegisterHook(InfoLevel, func(ctx context.Context, entry *Entry) error {
+	RegisterHook(InfoLevel, func(_ context.Context, _ *Entry) error {
 		return nil
 	})
 
@@ -191,7 +202,8 @@ func TestHookRegistry(t *testing.T) {
 		hook := &mockHook{levels: []Level{InfoLevel}}
 
 		// Add and remove hook
-		_ = registry.AddHook("test-hook", hook)
+		mustAddHook(t, registry, "test-hook", hook)
+
 		if !registry.RemoveHook("test-hook") {
 			t.Error("Expected RemoveHook to return true")
 		}
@@ -207,7 +219,7 @@ func TestHookRegistry(t *testing.T) {
 		hook := &mockHook{levels: []Level{InfoLevel}}
 
 		// Add hook
-		_ = registry.AddHook("test-hook", hook)
+		mustAddHook(t, registry, "test-hook", hook)
 
 		// Get existing hook
 		got, exists := registry.GetHook("test-hook")
@@ -232,9 +244,9 @@ func TestHookRegistry(t *testing.T) {
 		debugHook := &mockHook{levels: []Level{DebugLevel}}
 		multiHook := &mockHook{levels: []Level{InfoLevel, DebugLevel}}
 
-		_ = registry.AddHook("info-hook", infoHook)
-		_ = registry.AddHook("debug-hook", debugHook)
-		_ = registry.AddHook("multi-hook", multiHook)
+		mustAddHook(t, registry, "info-hook", infoHook)
+		mustAddHook(t, registry, "debug-hook", debugHook)
+		mustAddHook(t, registry, "multi-hook", multiHook)
 
 		// Get hooks for InfoLevel
 		hooks := registry.GetHooksForLevel(InfoLevel)
@@ -268,8 +280,8 @@ func TestHookRegistry(t *testing.T) {
 			},
 		}
 
-		_ = registry.AddHook("success-hook", successHook)
-		_ = registry.AddHook("fail-hook", failHook)
+		mustAddHook(t, registry, "success-hook", successHook)
+		mustAddHook(t, registry, "fail-hook", failHook)
 
 		entry := &Entry{Level: InfoLevel, Message: "test"}
 
@@ -391,11 +403,11 @@ func TestFireRegisteredHooks(t *testing.T) {
 
 	called := false
 
-	RegisterHook(InfoLevel, func(ctx context.Context, entry *Entry) error {
+	RegisterHook(InfoLevel, func(ctx context.Context, _ *Entry) error {
 		called = true
 
 		if ctx == nil {
-			t.Fatalf("expected context to be propagated")
+			t.Fatal("expected context to be propagated")
 		}
 
 		return nil
@@ -410,12 +422,12 @@ func TestFireRegisteredHooks(t *testing.T) {
 	}
 
 	if !called {
-		t.Fatalf("expected hook to be invoked")
+		t.Fatal("expected hook to be invoked")
 	}
 
 	UnregisterAllHooks()
 
-	RegisterHook(InfoLevel, func(ctx context.Context, entry *Entry) error {
+	RegisterHook(InfoLevel, func(_ context.Context, _ *Entry) error {
 		return ewrap.New("fail")
 	})
 

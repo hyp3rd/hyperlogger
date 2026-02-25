@@ -85,6 +85,8 @@ func TestNewWithDefaults(t *testing.T) {
 					assert.Equal(t, tt.environment, field.Value)
 
 					foundEnv = true
+				default:
+					continue
 				}
 			}
 

@@ -11,31 +11,39 @@ type nopCloser struct {
 	*bytes.Buffer
 }
 
-func (nc *nopCloser) Close() error {
+func (*nopCloser) Close() error {
 	return nil
 }
 
-func (nc *nopCloser) Sync() error {
+func (*nopCloser) Sync() error {
 	return nil
 }
 
 func TestWriteResult_Fields(t *testing.T) {
+	const expectedBytes = 42
+
 	buf := &bytes.Buffer{}
 	closableBuf := &nopCloser{buf}
 	wr := WriteResult{
 		Writer: closableBuf,
 		Name:   "test-writer",
-		Bytes:  42,
+		Bytes:  expectedBytes,
 		Err:    nil,
 	}
 
 	assert.Equal(t, closableBuf, wr.Writer)
 	assert.Equal(t, "test-writer", wr.Name)
-	assert.Equal(t, 42, wr.Bytes)
+	assert.Equal(t, expectedBytes, wr.Bytes)
 	assert.NoError(t, wr.Err)
 }
 
 func TestColorCode_Values(t *testing.T) {
+	const (
+		resetCode = 0
+		blackCode = 30
+		whiteCode = 37
+	)
+
 	tests := []struct {
 		name     string
 		code     ColorCode
@@ -44,17 +52,17 @@ func TestColorCode_Values(t *testing.T) {
 		{
 			name:     "reset code",
 			code:     ColorReset,
-			expected: 0,
+			expected: resetCode,
 		},
 		{
 			name:     "black color",
 			code:     ColorBlack,
-			expected: 30,
+			expected: blackCode,
 		},
 		{
 			name:     "white color",
 			code:     ColorWhite,
-			expected: 37,
+			expected: whiteCode,
 		},
 	}
 
@@ -66,6 +74,14 @@ func TestColorCode_Values(t *testing.T) {
 }
 
 func TestStyle_Values(t *testing.T) {
+	const (
+		styleBoldCode      = 1
+		styleDimCode       = 2
+		styleItalicCode    = 3
+		styleUnderlineCode = 4
+		styleNormalCode    = 22
+	)
+
 	tests := []struct {
 		name     string
 		style    Style
@@ -74,27 +90,27 @@ func TestStyle_Values(t *testing.T) {
 		{
 			name:     "bold style",
 			style:    StyleBold,
-			expected: 1,
+			expected: styleBoldCode,
 		},
 		{
 			name:     "dim style",
 			style:    StyleDim,
-			expected: 2,
+			expected: styleDimCode,
 		},
 		{
 			name:     "italic style",
 			style:    StyleItalic,
-			expected: 3,
+			expected: styleItalicCode,
 		},
 		{
 			name:     "underline style",
 			style:    StyleUnderline,
-			expected: 4,
+			expected: styleUnderlineCode,
 		},
 		{
 			name:     "normal style",
 			style:    StyleNormal,
-			expected: 22,
+			expected: styleNormalCode,
 		},
 	}
 

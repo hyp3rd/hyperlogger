@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/hyp3rd/hyperlogger/internal/constants"
 )
@@ -13,12 +13,14 @@ import (
 func TestContextMiddleware(t *testing.T) {
 	middleware := ContextMiddleware(WithIDGenerator(func() string { return "generated" }))
 
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		traceID, _ := r.Context().Value(constants.TraceKey{}).(string)
-		requestID, _ := r.Context().Value(constants.RequestKey{}).(string)
+	handler := middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		traceID, traceOK := r.Context().Value(constants.TraceKey{}).(string)
+		requestID, requestOK := r.Context().Value(constants.RequestKey{}).(string)
 
-		require.NotEmpty(t, traceID)
-		require.NotEmpty(t, requestID)
+		assert.True(t, traceOK)
+		assert.True(t, requestOK)
+		assert.NotEmpty(t, traceID)
+		assert.NotEmpty(t, requestID)
 	}))
 
 	rr := httptest.NewRecorder()
@@ -30,12 +32,14 @@ func TestContextMiddleware(t *testing.T) {
 func TestContextMiddlewareHeaders(t *testing.T) {
 	middleware := ContextMiddleware(WithGenerateMissingIDs(false))
 
-	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		traceID, _ := r.Context().Value(constants.TraceKey{}).(string)
-		requestID, _ := r.Context().Value(constants.RequestKey{}).(string)
+	handler := middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		traceID, traceOK := r.Context().Value(constants.TraceKey{}).(string)
+		requestID, requestOK := r.Context().Value(constants.RequestKey{}).(string)
 
-		require.Equal(t, "trace", traceID)
-		require.Equal(t, "req", requestID)
+		assert.True(t, traceOK)
+		assert.True(t, requestOK)
+		assert.Equal(t, "trace", traceID)
+		assert.Equal(t, "req", requestID)
 	}))
 
 	rr := httptest.NewRecorder()

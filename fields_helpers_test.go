@@ -9,6 +9,14 @@ import (
 )
 
 func TestFieldHelpers(t *testing.T) {
+	const (
+		countValue = 5
+		sizeValue  = uint64(3)
+		totalValue = int64(9)
+		ratioValue = 1.5
+		errorKey   = "error"
+	)
+
 	errExample := ewrap.New("boom")
 	now := time.Now()
 
@@ -20,14 +28,14 @@ func TestFieldHelpers(t *testing.T) {
 	}{
 		{"Str", Str("k", "v"), "k", "v"},
 		{"Bool", Bool("flag", true), "flag", true},
-		{"Int", Int("count", 5), "count", 5},
-		{"Int64", Int64("total", int64(9)), "total", int64(9)},
-		{"Uint64", Uint64("size", uint64(3)), "size", uint64(3)},
-		{"Float64", Float64("ratio", 1.5), "ratio", 1.5},
+		{"Int", Int("count", countValue), "count", countValue},
+		{"Int64", Int64("total", totalValue), "total", totalValue},
+		{"Uint64", Uint64("size", sizeValue), "size", sizeValue},
+		{"Float64", Float64("ratio", ratioValue), "ratio", ratioValue},
 		{"Duration", Duration("latency", time.Second), "latency", time.Second},
 		{"Time", Time("ts", now), "ts", now},
-		{"Error", Error("error", errExample), "error", errExample},
-		{"ErrorNil", Error("error", nil), "error", nil},
+		{"Error", Error(errorKey, errExample), errorKey, errExample},
+		{"ErrorNil", Error(errorKey, nil), errorKey, nil},
 		{"Any", Any("custom", []string{"a"}), "custom", []string{"a"}},
 	}
 

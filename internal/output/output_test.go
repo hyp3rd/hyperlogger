@@ -76,12 +76,12 @@ func TestNewFileWriter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			writer, err := NewFileWriter(tt.config)
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				assert.Nil(t, writer)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, writer)
-				writer.Close()
+				require.NoError(t, writer.Close())
 			}
 		})
 	}
@@ -98,15 +98,18 @@ func TestFileWriter_Write(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	defer writer.Close()
+	defer func() {
+		require.NoError(t, writer.Close())
+	}()
 
 	testData := []byte("test log entry\n")
 	n, err := writer.Write(testData)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, len(testData), n)
 
+	// #nosec G304 -- test reads a file created in a temporary directory
 	content, err := os.ReadFile(logPath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, testData, content)
 }
 
@@ -146,9 +149,9 @@ func TestConsoleWriter_Write(t *testing.T) {
 
 			n, err := writer.Write(tt.input)
 			if tt.wantErr {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, len(tt.input), n)
 				assert.NotEmpty(t, buf.String())
 			}
@@ -170,7 +173,7 @@ func TestMultiWriter_WriteToWriters(t *testing.T) {
 
 	testData := []byte("test message\n")
 	n, err := multi.Write(testData)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, len(testData), n)
 
 	assert.Equal(t, testData, buf1.Bytes())
@@ -189,7 +192,7 @@ func TestMultiWriter_AddRemoveWriter(t *testing.T) {
 	newWriter := NewConsoleWriter(newBuf, ColorModeNever)
 
 	err = multi.AddWriter(newWriter)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, multi.Writers, 2)
 	assert.True(t, multi.useDual)
 	assert.Equal(t, writer, multi.first)
@@ -201,7 +204,7 @@ func TestMultiWriter_AddRemoveWriter(t *testing.T) {
 
 	testData := []byte("test message\n")
 	_, err = multi.Write(testData)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, testData, newBuf.Bytes())
 }
 
@@ -216,19 +219,21 @@ func TestFileWriter_Rotation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	defer writer.Close()
+	defer func() {
+		require.NoError(t, writer.Close())
+	}()
 
 	// Write enough data to trigger rotation
 	data := []byte("test data that will cause rotation\n")
 	_, err = writer.Write(data)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Give rotation a moment to complete
 	time.Sleep(100 * time.Millisecond)
 
 	// Check that rotation created a backup file
 	files, err := os.ReadDir(tempDir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, files, 2)
 }
 
@@ -288,7 +293,7 @@ func TestFileWriter_Rotation(t *testing.T) {
 
 func TestMultiWriter_NilWriter(t *testing.T) {
 	_, err := NewMultiWriter(nil)
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	buf := &bytes.Buffer{}
 	writer := NewConsoleWriter(buf, ColorModeNever)
@@ -296,7 +301,7 @@ func TestMultiWriter_NilWriter(t *testing.T) {
 	require.NoError(t, err)
 
 	err = multi.AddWriter(nil)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestMultiWriter_DuplicateWriter(t *testing.T) {
@@ -307,7 +312,7 @@ func TestMultiWriter_DuplicateWriter(t *testing.T) {
 	require.NoError(t, err)
 
 	err = multi.AddWriter(writer)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestFileWriter_InvalidRotation(t *testing.T) {
@@ -321,14 +326,17 @@ func TestFileWriter_InvalidRotation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	defer writer.Close()
+	defer func() {
+		require.NoError(t, writer.Close())
+	}()
 
 	data := []byte("test data\n")
 	_, err = writer.Write(data)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
+	// #nosec G304 -- test reads a file created in a temporary directory
 	content, err := os.ReadFile(logPath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, data, content)
 }
 
@@ -343,8 +351,8 @@ func TestFileWriter_WriteAfterClose(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	writer.Close()
+	require.NoError(t, writer.Close())
 
 	_, err = writer.Write([]byte("test data\n"))
-	assert.Error(t, err)
+	require.Error(t, err)
 }

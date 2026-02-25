@@ -28,8 +28,7 @@ run-example:
 	go run ./__examples/$(group)/*.go $(ARGS)
 
 update-deps:
-	go get -v -u ./...
-	go mod tidy
+	go get -u -t ./... && go mod tidy -v && go mod verify
 
 prepare-toolchain: prepare-base-tools
 

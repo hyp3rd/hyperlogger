@@ -5,16 +5,18 @@ import (
 	"time"
 )
 
+const benchmarkWriteDelay = 200 * time.Microsecond
+
 func BenchmarkAsyncWriter(b *testing.B) {
 	benchmarks := []struct {
 		name       string
 		strategy   AsyncOverflowStrategy
 		writeDelay time.Duration
 	}{
-		{name: "drop_newest", strategy: AsyncOverflowDropNewest, writeDelay: 200 * time.Microsecond},
-		{name: "drop_oldest", strategy: AsyncOverflowDropOldest, writeDelay: 200 * time.Microsecond},
-		{name: "block", strategy: AsyncOverflowBlock, writeDelay: 200 * time.Microsecond},
-		{name: "handoff", strategy: AsyncOverflowHandoff, writeDelay: 200 * time.Microsecond},
+		{name: "drop_newest", strategy: AsyncOverflowDropNewest, writeDelay: benchmarkWriteDelay},
+		{name: "drop_oldest", strategy: AsyncOverflowDropOldest, writeDelay: benchmarkWriteDelay},
+		{name: "block", strategy: AsyncOverflowBlock, writeDelay: benchmarkWriteDelay},
+		{name: "handoff", strategy: AsyncOverflowHandoff, writeDelay: benchmarkWriteDelay},
 	}
 
 	for _, bm := range benchmarks {
@@ -26,7 +28,13 @@ func BenchmarkAsyncWriter(b *testing.B) {
 				BufferSize:       64,
 				OverflowStrategy: bm.strategy,
 			})
-			defer async.Close()
+
+			defer func() {
+				err := async.Close()
+				if err != nil {
+					b.Fatalf("Close failed: %v", err)
+				}
+			}()
 
 			payload := []byte("benchmark message")
 
@@ -34,7 +42,10 @@ func BenchmarkAsyncWriter(b *testing.B) {
 			b.ResetTimer()
 
 			for range b.N {
-				_, _ = async.Write(payload)
+				_, err := async.Write(payload)
+				if err != nil {
+					b.Fatalf("Write failed: %v", err)
+				}
 			}
 		})
 	}

@@ -11,13 +11,13 @@ func TestRegisterAsyncMetricsHandler(t *testing.T) {
 
 	called := false
 
-	RegisterAsyncMetricsHandler(func(ctx context.Context, metrics AsyncMetrics) {
+	RegisterAsyncMetricsHandler(func(_ context.Context, _ AsyncMetrics) {
 		called = true
 	})
 
 	EmitAsyncMetrics(context.Background(), AsyncMetrics{})
 
 	if !called {
-		t.Fatalf("expected registered handler to be invoked")
+		t.Fatal("expected registered handler to be invoked")
 	}
 }

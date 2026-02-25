@@ -30,7 +30,17 @@ func newMockWriter() *mockWriter {
 	}
 }
 
-func (m *mockWriter) Write(p []byte) (int, error) {
+func requireAsyncClose(t *testing.T, async *AsyncWriter) {
+	t.Helper()
+	require.NoError(t, async.Close())
+}
+
+func requireAsyncFlush(t *testing.T, async *AsyncWriter) {
+	t.Helper()
+	require.NoError(t, async.Flush())
+}
+
+func (m *mockWriter) Write(payload []byte) (int, error) {
 	m.mu.Lock()
 	delay := m.writeDelay
 	persistentErr := m.writeError
@@ -62,12 +72,12 @@ func (m *mockWriter) Write(p []byte) (int, error) {
 
 	m.mu.Lock()
 
-	buf := make([]byte, len(p))
-	copy(buf, p)
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
 	m.writtenData = append(m.writtenData, buf)
 	m.mu.Unlock()
 
-	return len(p), nil
+	return len(payload), nil
 }
 
 func (m *mockWriter) getWrittenData() [][]byte {
@@ -82,7 +92,7 @@ func TestNewAsyncWriter(t *testing.T) {
 		writer := newMockWriter()
 
 		async := NewAsyncWriter(writer, AsyncConfig{})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
 		if async.config.BufferSize != 1024 {
 			t.Errorf("Expected default buffer size 1024, got %d", async.config.BufferSize)
@@ -104,9 +114,9 @@ func TestNewAsyncWriter(t *testing.T) {
 		async := NewAsyncWriter(writer, AsyncConfig{
 			BufferSize:   100,
 			WaitTimeout:  2 * time.Second,
-			ErrorHandler: func(err error) { errCalled = true },
+			ErrorHandler: func(_ error) { errCalled = true },
 		})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
 		if async.config.BufferSize != 100 {
 			t.Errorf("Expected buffer size 100, got %d", async.config.BufferSize)
@@ -131,19 +141,21 @@ func TestNewAsyncWriter(t *testing.T) {
 			BufferSize:       1,
 			OverflowStrategy: AsyncOverflowHandoff,
 		})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
-		if _, err := async.Write([]byte("first")); err != nil {
+		_, err := async.Write([]byte("first"))
+		if err != nil {
 			t.Fatalf("first write failed: %v", err)
 		}
 
-		if _, err := async.Write([]byte("second")); err != nil {
+		_, err = async.Write([]byte("second"))
+		if err != nil {
 			t.Fatalf("handoff write failed: %v", err)
 		}
 
 		time.Sleep(250 * time.Millisecond)
 
-		_ = async.Flush()
+		requireAsyncFlush(t, async)
 
 		data := writer.getWrittenData()
 		if len(data) < 2 {
@@ -156,19 +168,21 @@ func TestNewAsyncWriter(t *testing.T) {
 		writer.writeDelay = 200 * time.Millisecond
 
 		async := NewAsyncWriter(writer, AsyncConfig{BufferSize: 1})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
-		if _, err := async.Write([]byte("background")); err != nil {
+		_, err := async.Write([]byte("background"))
+		if err != nil {
 			t.Fatalf("initial write failed: %v", err)
 		}
 
-		if _, err := async.WriteCritical([]byte("critical")); err != nil {
+		_, err = async.WriteCritical([]byte("critical"))
+		if err != nil {
 			t.Fatalf("critical write failed: %v", err)
 		}
 
 		time.Sleep(250 * time.Millisecond)
 
-		_ = async.Flush()
+		requireAsyncFlush(t, async)
 
 		written := writer.getWrittenData()
 		if len(written) != 2 {
@@ -177,7 +191,7 @@ func TestNewAsyncWriter(t *testing.T) {
 
 		metrics := async.Metrics()
 		if metrics.Bypassed < 1 {
-			t.Fatalf("expected bypassed count to increase")
+			t.Fatal("expected bypassed count to increase")
 		}
 	})
 }
@@ -187,7 +201,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 		writer := newMockWriter()
 
 		async := NewAsyncWriter(writer, AsyncConfig{})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
 		data := []byte("test message")
 
@@ -251,7 +265,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 				dropCalled = true
 			},
 		})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
 		// First write should succeed
 		_, err := async.Write([]byte("first"))
@@ -301,15 +315,17 @@ func TestAsyncWriter_Write(t *testing.T) {
 				dropped = append(dropped, buf)
 			},
 		})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
-		if _, err := async.Write([]byte("first")); err != nil {
+		_, err := async.Write([]byte("first"))
+		if err != nil {
 			t.Fatalf("first write failed: %v", err)
 		}
 
 		deadline := time.Now().Add(500 * time.Millisecond)
 		for len(dropped) == 0 && time.Now().Before(deadline) {
-			if _, err := async.Write([]byte("second")); err != nil {
+			_, err = async.Write([]byte("second"))
+			if err != nil {
 				t.Fatalf("second write should succeed with drop oldest, got %v", err)
 			}
 
@@ -317,14 +333,14 @@ func TestAsyncWriter_Write(t *testing.T) {
 		}
 
 		if len(dropped) == 0 {
-			t.Fatalf("expected dropped payloads, got none")
+			t.Fatal("expected dropped payloads, got none")
 		}
 
 		writer.mu.Lock()
 		writer.writeDelay = 0
 		writer.mu.Unlock()
 
-		_ = async.Flush()
+		requireAsyncFlush(t, async)
 
 		written := writer.getWrittenData()
 		if len(written) == 0 || string(written[len(written)-1]) != "second" {
@@ -340,9 +356,10 @@ func TestAsyncWriter_Write(t *testing.T) {
 			BufferSize:       1,
 			OverflowStrategy: AsyncOverflowBlock,
 		})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
-		if _, err := async.Write([]byte("first")); err != nil {
+		_, err := async.Write([]byte("first"))
+		if err != nil {
 			t.Fatalf("first write failed: %v", err)
 		}
 
@@ -362,7 +379,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 
 		time.Sleep(150 * time.Millisecond)
 
-		_ = async.Flush()
+		requireAsyncFlush(t, async)
 
 		written := writer.getWrittenData()
 		if len(written) < 2 {
@@ -378,19 +395,21 @@ func TestAsyncWriter_Write(t *testing.T) {
 			BufferSize:       1,
 			OverflowStrategy: AsyncOverflowHandoff,
 		})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
-		if _, err := async.Write([]byte("first")); err != nil {
+		_, err := async.Write([]byte("first"))
+		if err != nil {
 			t.Fatalf("first write failed: %v", err)
 		}
 
-		if _, err := async.Write([]byte("second")); err != nil {
+		_, err = async.Write([]byte("second"))
+		if err != nil {
 			t.Fatalf("handoff write failed: %v", err)
 		}
 
 		time.Sleep(250 * time.Millisecond)
 
-		_ = async.Flush()
+		requireAsyncFlush(t, async)
 
 		written := writer.getWrittenData()
 		if len(written) != 2 {
@@ -403,19 +422,21 @@ func TestAsyncWriter_Write(t *testing.T) {
 		writer.writeDelay = 200 * time.Millisecond
 
 		async := NewAsyncWriter(writer, AsyncConfig{BufferSize: 1})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
-		if _, err := async.Write([]byte("background")); err != nil {
+		_, err := async.Write([]byte("background"))
+		if err != nil {
 			t.Fatalf("initial write failed: %v", err)
 		}
 
-		if _, err := async.WriteCritical([]byte("critical")); err != nil {
+		_, err = async.WriteCritical([]byte("critical"))
+		if err != nil {
 			t.Fatalf("critical write failed: %v", err)
 		}
 
 		time.Sleep(250 * time.Millisecond)
 
-		_ = async.Flush()
+		requireAsyncFlush(t, async)
 
 		written := writer.getWrittenData()
 		if len(written) != 2 {
@@ -424,7 +445,7 @@ func TestAsyncWriter_Write(t *testing.T) {
 
 		metrics := async.Metrics()
 		if metrics.Bypassed < 1 {
-			t.Fatalf("expected bypassed metrics to increase")
+			t.Fatal("expected bypassed metrics to increase")
 		}
 	})
 }
@@ -433,7 +454,7 @@ func TestAsyncWriter_ReusesPayloadBuffers(t *testing.T) {
 	writer := newMockWriter()
 
 	async := NewAsyncWriter(writer, AsyncConfig{BufferSize: 1})
-	defer async.Close()
+	defer requireAsyncClose(t, async)
 
 	var newCount atomic.Int32
 
@@ -490,7 +511,7 @@ func TestAsyncWriter_DropPayloadRetention(t *testing.T) {
 			secondary.Release()
 		},
 	})
-	defer async.Close()
+	defer requireAsyncClose(t, async)
 
 	_, err := async.Write([]byte("first"))
 	require.NoError(t, err)
@@ -538,7 +559,7 @@ func TestAsyncWriter_DropPayloadAutoRelease(t *testing.T) {
 			require.Equal(t, "second", string(payload.Bytes()))
 		},
 	})
-	defer async.Close()
+	defer requireAsyncClose(t, async)
 
 	_, err := async.Write([]byte("first"))
 	require.NoError(t, err)
@@ -582,7 +603,7 @@ func TestAsyncWriter_Metrics(t *testing.T) {
 			reported.Store(&snapshot)
 		},
 	})
-	defer async.Close()
+	defer requireAsyncClose(t, async)
 
 	_, err := async.Write([]byte("first"))
 	require.NoError(t, err)
@@ -645,7 +666,7 @@ func TestAsyncWriter_Retry(t *testing.T) {
 		RetryBackoffMultiplier: 1.0,
 		RetryMaxBackoff:        5 * time.Millisecond,
 	})
-	defer async.Close()
+	defer requireAsyncClose(t, async)
 
 	_, err := async.Write([]byte("retry message"))
 	require.NoError(t, err)
@@ -676,7 +697,7 @@ func TestAsyncWriter_Flush(t *testing.T) {
 		writer := newMockWriter()
 
 		async := NewAsyncWriter(writer, AsyncConfig{})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
 		_, err := async.Write([]byte("test"))
 		if err != nil {
@@ -737,7 +758,7 @@ func TestAsyncWriter_Sync(t *testing.T) {
 	writer := newMockWriter()
 
 	async := NewAsyncWriter(writer, AsyncConfig{})
-	defer async.Close()
+	defer requireAsyncClose(t, async)
 
 	_, err := async.Write([]byte("test"))
 	if err != nil {
@@ -801,7 +822,7 @@ func TestAsyncWriter_ErrorHandling(t *testing.T) {
 				errorWg.Done()
 			},
 		})
-		defer async.Close()
+		defer requireAsyncClose(t, async)
 
 		_, err := async.Write([]byte("test"))
 		if err != nil {
@@ -823,7 +844,7 @@ func TestAsyncWriter_ConcurrentWrites(t *testing.T) {
 	async := NewAsyncWriter(writer, AsyncConfig{
 		BufferSize: 100,
 	})
-	defer async.Close()
+	defer requireAsyncClose(t, async)
 
 	const (
 		goroutines           = 10
@@ -833,8 +854,8 @@ func TestAsyncWriter_ConcurrentWrites(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := range goroutines {
-		go func(id int) {
+	for range goroutines {
+		go func() {
 			defer wg.Done()
 
 			for range messagesPerGoroutine {
@@ -843,7 +864,7 @@ func TestAsyncWriter_ConcurrentWrites(t *testing.T) {
 					t.Errorf("Write error: %v", err)
 				}
 			}
-		}(i)
+		}()
 	}
 
 	wg.Wait()
