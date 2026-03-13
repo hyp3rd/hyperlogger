@@ -10,7 +10,7 @@ import (
 
 	"github.com/hyp3rd/ewrap"
 
-	"github.com/hyp3rd/hyperlogger/internal/utils"
+	"github.com/hyp3rd/hyperlogger/internal/security"
 )
 
 const (
@@ -252,7 +252,7 @@ func SetOutput(output string) (io.Writer, error) {
 		}
 
 		if !filepath.IsAbs(path) {
-			securePath, err := utils.SecurePath(path)
+			securePath, err := security.SecurePath(path)
 			if err != nil {
 				return nil, ewrap.Wrap(err, "invalid output path")
 			}

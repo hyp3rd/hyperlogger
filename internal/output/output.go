@@ -46,7 +46,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/hyp3rd/hyperlogger"
-	"github.com/hyp3rd/hyperlogger/internal/utils"
+	"github.com/hyp3rd/hyperlogger/internal/security"
 )
 
 const (
@@ -106,7 +106,7 @@ func NewFileWriter(config FileConfig) (*FileWriter, error) {
 	}
 
 	// Ensure path is secure
-	securePath, err := utils.SecurePath(config.Path)
+	securePath, err := security.SecurePath(config.Path)
 	if err != nil {
 		return nil, ewrap.Wrap(err, "invalid log file path")
 	}

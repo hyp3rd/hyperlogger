@@ -1,4 +1,4 @@
-// Package utils provides internal utility functions used throughout the logger package.
+// Package security provides internal security-related functions used throughout the logger package.
 //
 // This package contains helper functions for common tasks such as file path handling,
 // security utilities, and I/O operations. These utilities are primarily for internal use
@@ -6,7 +6,7 @@
 //
 // The utilities include path security functions to prevent directory traversal attacks
 // when handling user-supplied file paths.
-package utils
+package security
 
 import (
 	"os"

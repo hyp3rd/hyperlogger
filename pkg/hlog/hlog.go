@@ -1,4 +1,4 @@
-// Package log provides application-level logging functionality for services.
+// Package hlog provides application-level logging functionality for services.
 //
 // This package creates and configures loggers with appropriate settings based on the
 // environment (production or non-production) and service name. It offers a simplified
@@ -15,14 +15,14 @@
 //
 // Usage:
 //
-//	log, err := log.New(ctx, "development", "user-service")
+//	hlog, err := hlog.NewWithDefaults(ctx, "development", "user-service")
 //	if err != nil {
 //		panic(err)
 //	}
 //
-//	log.Info("Service started successfully")
-//	log.WithField("user", userID).Debug("User authenticated")
-package log
+//	hlog.Info("Service started successfully")
+//	hlog.WithField("user", userID).Debug("User authenticated")
+package hlog
 
 import (
 	"context"

@@ -11,7 +11,7 @@ import (
 
 	"github.com/hyp3rd/ewrap"
 
-	"github.com/hyp3rd/hyperlogger/internal/utils"
+	"github.com/hyp3rd/hyperlogger/internal/security"
 )
 
 // BufferSize represents different buffer sizes for memory optimization.
@@ -436,7 +436,7 @@ func CompressFile(path string, config CompressionConfig) (string, error) {
 
 func compressGzip(path string, level int) (string, error) {
 	// Open the source file
-	secPath, err := utils.SecurePath(path)
+	secPath, err := security.SecurePath(path)
 	if err != nil {
 		return "", err
 	}

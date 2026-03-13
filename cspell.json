@@ -64,6 +64,7 @@
     "GOTOOLCHAIN",
     "govulncheck",
     "grpcmw",
+    "hlog",
     "honnef",
     "httpmw",
     "hyperlogger",

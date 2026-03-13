@@ -2,7 +2,7 @@ package configloader
 
 import (
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -285,7 +285,7 @@ func convertAdditionalFields(entries map[string]any) []hyperlogger.Field {
 		keys = append(keys, key)
 	}
 
-	sort.Strings(keys)
+	slices.Sort(keys)
 
 	fields := make([]hyperlogger.Field, 0, len(entries))
 	for _, key := range keys {
