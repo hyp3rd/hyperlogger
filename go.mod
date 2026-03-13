@@ -6,7 +6,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/gofiber/fiber/v3 v3.1.0
-	github.com/hyp3rd/ewrap v1.3.7
+	github.com/hyp3rd/ewrap v1.3.8
 	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
