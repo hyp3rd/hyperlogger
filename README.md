@@ -486,24 +486,6 @@ log, err := adapter.NewAdapter(*b.Build())
 
 Per-level sampling rules keep critical log levels verbosely while aggressively sampling noisy ones.
 
-### Middleware Helpers
-
-Seed context values automatically using the provided HTTP and gRPC middleware:
-
-```go
-// HTTP middleware enriches context with request identifiers.
-handler := httpmw.ContextMiddleware()(nextHandler)
-
-// gRPC interceptor (build with -tags grpc) maps incoming metadata into context.
-interceptor := grpcmw.UnaryServerInterceptor(
-    grpcmw.WithTraceKey("x-trace"),
-    grpcmw.WithRequestKey("x-request"),
-)
-grpc.NewServer(grpc.UnaryInterceptor(interceptor))
-```
-
-Downstream logging code can then access these values via context extractors or the built-in key mappings.
-
 ### Async Benchmarks
 
 Evaluate how overflow strategies behave under sustained load:
