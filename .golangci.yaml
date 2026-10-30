@@ -178,6 +178,12 @@ linters:
           disabled: true
           exclude: [""]
 
+        - name: unhandled-error
+          disabled: true
+
+        - name: add-constant
+          disabled: true
+
     wrapcheck:
       # An array of strings that specify globs of packages to ignore.
       # Default: []
