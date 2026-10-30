@@ -259,7 +259,7 @@ func SetOutput(output string) (io.Writer, error) {
 
 			path = securePath
 		}
-
+		//gosec:disable G302 -- We are intentionally opening a file for writing logs, which is a valid use case.
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, LogFilePermissions)
 		if err != nil {
 			return nil, ewrap.Wrapf(err, "failed to open log file %s", path)
