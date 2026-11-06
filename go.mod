@@ -3,7 +3,7 @@ module github.com/hyp3rd/hyperlogger
 go 1.27.3
 
 require (
-	github.com/hyp3rd/ewrap v1.5.2
+	github.com/hyp3rd/ewrap v1.5.3
 	github.com/mattn/go-isatty v0.0.24
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
